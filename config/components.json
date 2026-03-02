@@ -1,0 +1,37 @@
+{
+  "components": [
+    {
+      "filename": "evm_price_oracle.wasm",
+      "package_name": "evmpriceoracle",
+      "package_version": "0.1.0",
+      "trigger": {
+        "event": {
+          "contract_json_path": "evmpriceoracle_trigger.deployedTo",
+          "event": "NewTrigger(bytes)"
+        }
+      },
+      "submit": {
+        "contract_json_path": "evmpriceoracle_submit.deployedTo"
+      },
+      "config": {
+        "values": {
+          "chain_name": "${getEnv(triggerChain)}"
+        }
+      },
+      "env_variables": []
+    }
+  ],
+  "aggregator_components": [
+    {
+      "filename": "aggregator.wasm",
+      "package_name": "aggregator",
+      "package_version": "0.1.0",
+      "config": {
+        "values": {
+          "timer_delay_secs": "${getEnv(aggregatorTimerDelaySeconds)}"
+        }
+      },
+      "env_variables": ["WAVS_ENV_ETHERSCAN_API_KEY"]
+    }
+  ]
+}

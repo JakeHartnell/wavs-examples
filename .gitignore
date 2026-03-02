@@ -1,0 +1,23 @@
+# general compile
+/target
+out/
+cache/
+broadcast/
+node_modules/
+
+# WAVS
+.env
+!compiled/aggregator.wasm
+compiled/*.wasm
+.docker/*.json
+.docker/*.log
+wavs:worker*.wit
+wavs:worker*.wasm
+
+# WAVS infra
+.nodes
+infra/*
+
+# Tools
+**/.claude/settings.local.json
+.task/remote/
