@@ -1,0 +1,35 @@
+# docker-compose.wavs.yml — OpenClaw + WAVS build toolchain override
+#
+# Usage (from your openclaw directory):
+#   docker compose -f docker-compose.yml -f /path/to/wavs-examples/docker-compose.wavs.yml up -d
+#
+# Or standalone:
+#   docker compose -f docker-compose.wavs.yml up -d
+#
+# This extends the base openclaw docker-compose.yml to:
+# 1. Build the openclaw-wavs image (OpenClaw + Rust/WASM toolchain)
+# 2. Mount the wavs-examples workspace
+
+services:
+  openclaw-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.wavs
+    image: openclaw-wavs:local
+    environment:
+      CARGO_HOME: /home/node/.cargo
+      RUSTUP_HOME: /home/node/.rustup
+      PATH: /home/node/.cargo/bin:/home/node/.foundry/bin:/usr/local/bin:/usr/bin:/bin
+    volumes:
+      # Mount wavs-examples repo so builds write to the right place
+      - .:/home/node/.openclaw/workspace/wavs-examples
+
+  openclaw-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile.wavs
+    image: openclaw-wavs:local
+    environment:
+      CARGO_HOME: /home/node/.cargo
+      RUSTUP_HOME: /home/node/.rustup
+      PATH: /home/node/.cargo/bin:/home/node/.foundry/bin:/usr/local/bin:/usr/bin:/bin

@@ -1,0 +1,61 @@
+# Dockerfile.wavs — OpenClaw + WAVS build toolchain
+#
+# Extends the base OpenClaw image with everything needed to build
+# WAVS WASM components: Rust, cargo-component, wasm-tools, foundry.
+#
+# Build:
+#   docker build -f Dockerfile.wavs -t openclaw-wavs:local .
+#
+# Or use docker-compose.wavs.yml which builds this automatically.
+
+FROM openclaw:local
+
+USER root
+
+# System deps needed for Rust + WASM toolchain
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      curl \
+      build-essential \
+      pkg-config \
+      libssl-dev \
+      ca-certificates \
+      git \
+      && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Rust as node user (matches container's runtime user)
+USER node
+ENV RUSTUP_HOME=/home/node/.rustup
+ENV CARGO_HOME=/home/node/.cargo
+ENV PATH="/home/node/.cargo/bin:${PATH}"
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --no-modify-path --default-toolchain stable && \
+    rustup target add wasm32-wasip2
+
+# Install cargo-component + wasm tooling
+RUN cargo install cargo-binstall --locked && \
+    cargo binstall cargo-component wasm-tools warg-cli wkg \
+      --locked --no-confirm --force
+
+# Configure default WIT registry
+RUN wkg config --default-registry wa.dev
+
+# Install Foundry (forge, cast, anvil) — useful for contract interaction
+USER root
+RUN curl -L https://foundry.paradigm.xyz | bash
+USER node
+ENV PATH="/home/node/.foundry/bin:${PATH}"
+RUN foundryup
+
+# Install Task runner
+USER root
+RUN sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+USER node
+
+# Verify toolchain
+RUN cargo --version && \
+    cargo component --version && \
+    wasm-tools --version && \
+    forge --version && \
+    task --version
