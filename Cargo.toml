@@ -12,6 +12,9 @@ members = [
     # "examples/agents/02-agent-memory/component",
     # "examples/agents/03-ai-inference/component",
 
+    # Examples
+    "components/echo",
+
     # Legacy / template components (kept for reference)
     "components/evm-price-oracle",
     "components/aggregator",
