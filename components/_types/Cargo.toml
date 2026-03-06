@@ -1,0 +1,14 @@
+[package]
+name = "wavs-examples-types"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

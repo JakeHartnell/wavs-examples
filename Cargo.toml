@@ -1,5 +1,21 @@
 [workspace]
-members = ["components/evm-price-oracle", "components/aggregator"]
+members = [
+    # Shared infrastructure
+    "components/_helpers",
+    "components/_types",
+
+    # Examples - basics
+    # "examples/basics/01-echo/component",
+
+    # Examples - agents
+    # "examples/agents/01-task-queue/component",
+    # "examples/agents/02-agent-memory/component",
+    # "examples/agents/03-ai-inference/component",
+
+    # Legacy / template components (kept for reference)
+    "components/evm-price-oracle",
+    "components/aggregator",
+]
 resolver = "2"
 
 [workspace.package]
@@ -7,7 +23,7 @@ edition = "2021"
 version = "1.0.0"
 license = "MIT"
 authors = ["Lay3r Labs Team"]
-repository = "https://github.com/Lay3rLabs/wavs"
+repository = "https://github.com/Lay3rLabs/wavs-examples"
 rust-version = "1.87.0"
 
 [workspace.dependencies]

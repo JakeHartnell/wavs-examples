@@ -1,143 +1,92 @@
-# [WAVS](https://docs.wavs.xyz) Monorepo Template
+# wavs-examples
 
-**Template for getting started with developing WAVS applications**
+A collection of examples for [WAVS](https://github.com/Lay3rLabs/WAVS) — the WebAssembly Verifiable Services framework for event-driven decentralized applications.
 
-A template for developing WebAssembly AVS applications using Rust and Solidity, configured for Windows *WSL*, Linux, and MacOS. The sample oracle service fetches the current price of a cryptocurrency from [CoinMarketCap](https://coinmarketcap.com) and saves it on chain via the operators.
+## What's here
 
-**Languages**
- * [Rust (this example)](./components/evm-price-oracle/)
- * [Go](./components/golang-evm-price-oracle/README.md)
- * [JS / TS](./components/js-evm-price-oracle/README.md)
+Each example is a self-contained WAVS service: a Rust/WASM component, optional Solidity contracts, a service manifest, and a README explaining what it does and why.
 
-## Usage
+### Structure
 
-### 1. System setup
+```
+examples/
+├── basics/               # Start here
+│   ├── 01-echo/          # Simplest possible component: echo trigger data back
+│   └── 02-price-oracle/  # Adapted from the WAVS foundry template
+│
+├── data/                 # Real-world data feeds
+│   ├── 01-weather/       # Historical weather data oracle
+│   └── 02-sports/        # Sports results oracle
+│
+├── onchain/              # Blockchain interactions
+│   ├── 01-token-balance/ # ERC-20 balance checker
+│   └── 02-nft-ownership/ # NFT ownership verifier
+│
+└── agents/               # 🤖 AI agent primitives built on WAVS
+    ├── 01-task-queue/    # On-chain task queue for agent workflows
+    ├── 02-agent-memory/  # Verifiable persistent memory for agents
+    ├── 03-ai-inference/  # Deterministic on-chain AI inference (Ollama)
+    ├── 04-agent-watcher/ # Autonomous agent monitoring + alerts
+    └── 05-multi-agent/   # Chained workflows between agents
+```
 
-Follow the instructions in [README_SETUP.md](./README_SETUP.md) to ensure your system is set up with the necessary tools and dependencies.
+### Shared infrastructure
 
-Then install dependencies:
+```
+components/
+├── _helpers/  # Shared Rust crate: trigger decode/encode, WIT bindings
+└── _types/    # Shared data types used across examples
+```
+
+## Prerequisites
+
+- [Rust](https://www.rust-lang.org/tools/install) + `wasm32-wasip2` target
+- [cargo-component](https://github.com/bytecodealliance/cargo-component)
+- [Foundry](https://book.getfoundry.sh/)
+- [Docker](https://docs.docker.com/get-started/get-docker/) (for running the local WAVS node)
+- [Task](https://taskfile.dev/installation/) (`npm install -g @go-task/cli`)
 
 ```bash
-# Install packages (pnpm & forge submodules)
-task -y setup
+# Install Rust toolchain
+rustup target add wasm32-wasip2
+
+# Install cargo tooling
+cargo install cargo-binstall
+cargo binstall cargo-component wasm-tools warg-cli wkg --locked --no-confirm --force
+
+# Configure default registry
+wkg config --default-registry wa.dev
 ```
 
-### 2. Solidity
-
-This project supports [pnpm packages](./package.json), you can add git submodules if you need.
+## Quick start
 
 ```bash
-# Build the contracts
-task build:forge
+# Start local WAVS node + Anvil
+task start-all-local
 
-# Run the solidity tests
-task test
+# Run a specific example (see each example's README)
+cd examples/basics/01-echo
+task deploy
 ```
 
-### 3. Build WASI components
+## The agent angle
 
-Build the WASI components into the `compiled` output directory.
+WAVS is uniquely powerful for AI agents. Think about what an agent normally lacks:
 
-> \[!WARNING]
-> If you get: `error: no registry configured for namespace "wavs"`
->
-> run, `wkg config --default-registry wa.dev`
+- **Persistent, verifiable memory** — not just local files, but state committed on-chain
+- **Event-driven autonomy** — reacting to on-chain events without being polled
+- **Verifiable outputs** — cryptographic proof that a specific computation ran
+- **Multi-agent coordination** — passing work between agents through on-chain state
 
-> \[!WARNING]
-> If you get: `failed to find the 'wasm32-wasip1' target and 'rustup' is not available`
->
-> `brew uninstall rust` & install it from <https://rustup.rs>
+The `examples/agents/` directory explores all of these primitives. If you're building AI agent infrastructure, start there.
 
-```bash
-# Remove `WASI_BUILD_DIR` to build all components.
-WASI_BUILD_DIR=components/evm-price-oracle task -y build:wasi
-```
+## Adding an example
 
-### 4. Test the component locally
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-Validate business logic before on-chain deployment. An ID of `1` is Bitcoin.
+## Resources
 
-```bash
-INPUT_DATA="1" COMPONENT_FILENAME=evm_price_oracle.wasm task wasi:exec
-```
-
-Expected output:
-
-```shell docci-ignore
-Decoded crypto ID: 1
-resp_data: PriceFeedData { symbol: "BTC", timestamp: "2025-10-01T18:12:11", price: 116999.97 }
-INFO Fuel used: 702137
-
-Time elapsed (ms): 123
-
-Result (hex encoded): 7b2273796d626f6c2...
-
-Result (utf8): {"symbol":"BTC","timestamp":"2025-10-01T18:12:11","price":116999.97}
-
-Ordering: 0
-```
-
-### 5. Start backend services
-
-> [!NOTE]
-> This must remain running in your terminal. Use new terminals to run other commands. You can stop the services with `ctrl+c`. Some terminals require pressing it twice.
-
-```bash docci-background docci-delay-after=5
-# Create a .env file from the example
-cp .env.example .env
-
-# Starts anvil + IPFS and WARG registry.
-task -y start-all-local
-```
-
-### 6. Deploy and run WAVS
-
-This script automates the complete WAVS deployment process, including contract deployments, component uploads, and operator registration, in a single command:
-
-```bash
-task deploy-full
-```
-
-### 7. Trigger the service
-
-Anyone can now call the [trigger contract](./src/contracts/WavsTrigger.sol) to emit the trigger event WAVS is watching for. WAVS then calls the service and saves the result on-chain.
-
-```bash
-# Get the trigger address from the deployment summary
-export SERVICE_TRIGGER_ADDR=`jq -r '.evmpriceoracle_trigger.deployedTo' .docker/deployment_summary.json`
-
-export RPC_URL=`task get-rpc`
-export FUNDED_KEY=`task config:funded-key`
-
-# Request BTC price from CoinMarketCap (ID=1)
-export INPUT_DATA=`cast abi-encode "addTrigger(string)" "1"`
-
-forge script ./src/script/Trigger.s.sol ${SERVICE_TRIGGER_ADDR} ${INPUT_DATA} --sig 'run(string,string)' --rpc-url ${RPC_URL} --broadcast --private-key ${FUNDED_KEY}
-```
-
-### 8. Show the result
-
-Query the latest submission from the previous request.
-
-```bash docci-delay-per-cmd=2 docci-output-contains="1"
-RPC_URL=${RPC_URL} forge script ./src/script/ShowResult.s.sol ${SERVICE_TRIGGER_ADDR} --sig 'trigger(string)' --rpc-url ${RPC_URL}
-```
-
-```bash docci-delay-per-cmd=2 docci-output-contains="BTC"
-export SERVICE_SUBMIT_ADDR=`jq -r '.evmpriceoracle_submit.deployedTo' .docker/deployment_summary.json`
-RPC_URL=${RPC_URL} forge script ./src/script/ShowResult.s.sol ${SERVICE_SUBMIT_ADDR} 1 --sig 'data(string,uint64)' --rpc-url ${RPC_URL}
-```
-
-## AI Coding Agents
-
-This template contains rulefiles for building components with Claude Code and Cursor. Read the [AI-powered component creation guide](./docs/handbook/ai.mdx) for usage instructions.
-
-### Claude Code
-
-To spin up a sandboxed instance of [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview) in a Docker container that only has access to this project's files, run the following command:
-
-```bash docci-ignore
-pnpm run claude-code
-# or with no restrictions (--dangerously-skip-permissions)
-pnpm run claude-code:unrestricted
-```
+- [WAVS Docs](https://docs.wavs.xyz)
+- [WAVS GitHub](https://github.com/Lay3rLabs/WAVS)
+- [Foundry Template](https://github.com/Lay3rLabs/wavs-foundry-template)
+- [awesome-WAVS](https://github.com/Lay3rLabs/awesome-WAVS)

@@ -1,0 +1,21 @@
+[package]
+name = "wavs-examples-helpers"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+wavs-wasi-utils = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-provider = { workspace = true }
+alloy-contract = { workspace = true }
+alloy-sol-macro = { workspace = true }
+alloy-sol-types = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+wit-bindgen = { workspace = true }
+
+[lib]
+crate-type = ["rlib", "cdylib"]
