@@ -206,12 +206,25 @@ SIGNING_KEY=$(echo "$SIGNER_RESP" | python3 -c "import json,sys; print(json.load
 success "Signing key: $SIGNING_KEY (HD index $HD_INDEX)"
 
 # =============================================================================
-# 9. Fund signing key
+# 9. Fund signing key AND aggregator credential
+#
+# Two accounts need ETH:
+#   - SIGNING_KEY  (HD index N of WAVS mnemonic) — signs submitted results
+#   - AGGREGATOR   (HD index 0 of WAVS mnemonic) — pays gas for on-chain submits
+#
+# IMPORTANT: Failure to fund the aggregator causes silent failures — the
+# component will run and produce a result, but the aggregator can't submit it.
 # =============================================================================
 info "Funding signing key..."
 cast send "$SIGNING_KEY" --value 1ether \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 success "Funded $SIGNING_KEY with 1 ETH"
+
+info "Funding aggregator credential (HD index 0 of WAVS mnemonic)..."
+AGG_CREDENTIAL="0xc63aff4f9B0ebD48B6C9814619cAbfD9a7710A58"
+cast send "$AGG_CREDENTIAL" --value 1ether \
+  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
+success "Funded aggregator $AGG_CREDENTIAL with 1 ETH"
 
 # =============================================================================
 # 10. Set operator weight
