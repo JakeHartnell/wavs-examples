@@ -6,14 +6,8 @@ version = 4
 name = "aggregator"
 version = "1.0.0"
 dependencies = [
- "alloy-network",
  "alloy-primitives",
- "alloy-provider",
- "serde",
- "serde_json",
- "wavs-wasi-utils",
  "wit-bindgen 0.46.0",
- "wstd",
 ]
 
 [[package]]
@@ -72,6 +66,44 @@ dependencies = [
  "alloy-rlp",
  "alloy-serde",
  "serde",
+]
+
+[[package]]
+name = "alloy-contract"
+version = "1.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca63b7125a981415898ffe2a2a696c83696c9c6bdb1671c8a912946bbd8e49e7"
+dependencies = [
+ "alloy-consensus",
+ "alloy-dyn-abi",
+ "alloy-json-abi",
+ "alloy-network",
+ "alloy-network-primitives",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth",
+ "alloy-sol-types",
+ "alloy-transport",
+ "futures",
+ "futures-util",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "alloy-dyn-abi"
+version = "1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc2db5c583aaef0255aa63a4fe827f826090142528bba48d1bf4119b62780cad"
+dependencies = [
+ "alloy-json-abi",
+ "alloy-primitives",
+ "alloy-sol-type-parser",
+ "alloy-sol-types",
+ "itoa",
+ "serde",
+ "serde_json",
+ "winnow",
 ]
 
 [[package]]
@@ -1283,6 +1315,18 @@ dependencies = [
  "serdect",
  "signature",
  "spki",
+]
+
+[[package]]
+name = "echo"
+version = "1.0.0"
+dependencies = [
+ "alloy-sol-macro",
+ "alloy-sol-types",
+ "anyhow",
+ "serde_json",
+ "wavs-wasi-utils",
+ "wit-bindgen 0.46.0",
 ]
 
 [[package]]
@@ -3867,6 +3911,29 @@ dependencies = [
  "pin-utils",
  "slab",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "wavs-examples-helpers"
+version = "1.0.0"
+dependencies = [
+ "alloy-contract",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-sol-macro",
+ "alloy-sol-types",
+ "anyhow",
+ "serde",
+ "wavs-wasi-utils",
+ "wit-bindgen 0.46.0",
+]
+
+[[package]]
+name = "wavs-examples-types"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

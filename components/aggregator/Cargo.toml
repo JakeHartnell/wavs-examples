@@ -21,10 +21,4 @@ package = "component:aggregator"
 
 [dependencies]
 alloy-primitives = { workspace = true }
-alloy-network = { workspace = true }
-alloy-provider = { workspace = true }
 wit-bindgen = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-wavs-wasi-utils = { workspace = true }
-wstd = { workspace = true }

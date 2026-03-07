@@ -12,14 +12,12 @@ struct Component;
 export!(Component with_types_in bindings);
 
 impl Guest for Component {
-    fn run(action: TriggerAction) -> Result<Option<WasmResponse>, String> {
+    fn run(action: TriggerAction) -> Result<Vec<WasmResponse>, String> {
         let (trigger_id, req, dest) =
             decode_trigger_event(action.data).map_err(|e| e.to_string())?;
 
         // Decode the input: handle both hex-encoded (CLI) and raw ABI-encoded (production)
         let input_str = decode_string_input(&req).map_err(|e| e.to_string())?;
-
-        println!("Echo component received: {}", input_str);
 
         // Echo it straight back
         let output = serde_json::json!({
@@ -28,15 +26,15 @@ impl Guest for Component {
         let output_bytes = serde_json::to_vec(&output).map_err(|e| e.to_string())?;
 
         let response = match dest {
-            Destination::Ethereum => Some(encode_trigger_output(trigger_id, &output_bytes)),
-            Destination::CliOutput => Some(WasmResponse {
+            Destination::Ethereum => encode_trigger_output(trigger_id, &output_bytes),
+            Destination::CliOutput => WasmResponse {
                 payload: output_bytes.into(),
                 ordering: None,
                 event_id_salt: None,
-            }),
+            },
         };
 
-        Ok(response)
+        Ok(vec![response])
     }
 }
 

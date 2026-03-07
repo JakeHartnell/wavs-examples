@@ -2,114 +2,60 @@
 #[rustfmt::skip]
 mod bindings;
 
-mod gas_oracle;
-mod utils;
-
-use wavs_wasi_utils::impl_u128_conversions;
-
 use crate::bindings::{
     export, host,
     wavs::{
         aggregator::{
             input::AggregatorInput,
-            output::{AggregatorAction, EvmAddress, EvmSubmitAction, SubmitAction, TimerAction},
+            output::{AggregatorAction, EvmAddress, EvmSubmitAction, SubmitAction},
         },
-        types::{
-            chain::AnyTxHash,
-            core::{Duration, U128},
-            service::Submit,
-        },
+        types::{chain::AnyTxHash},
     },
     Guest,
 };
-
-impl_u128_conversions!(U128);
 
 struct Component;
 
 impl Guest for Component {
     fn process_input(input: AggregatorInput) -> Result<Vec<AggregatorAction>, String> {
-        let timer_delay_secs = host::config_var("timer_delay_secs")
-            .map(|delay_str| {
-                delay_str.parse().map_err(|e| format!("Failed to parse timer_delay_secs: {e}"))
-            })
-            .transpose()?;
+        let workflow = host::get_workflow().workflow;
 
-        match timer_delay_secs {
-            Some(secs) => {
-                // Use timer delay if specified
-                let timer_action = TimerAction { delay: Duration { secs } };
-                Ok(vec![AggregatorAction::Timer(timer_action)])
+        let submit_config = match workflow.submit {
+            bindings::wavs::types::service::Submit::None => {
+                return Err("submit is none".to_string());
             }
-            None => {
-                // No timer delay - process immediately (skip tx validation)
-                process_submission(input, false)
+            bindings::wavs::types::service::Submit::Aggregator(s) => s.component.config,
+        };
+
+        let mut actions = Vec::new();
+
+        for (chain_key, service_handler_address) in submit_config {
+            if host::get_evm_chain_config(&chain_key).is_some() {
+                let address: alloy_primitives::Address = service_handler_address
+                    .parse()
+                    .map_err(|e| format!("Failed to parse address for '{chain_key}': {e}"))?;
+
+                actions.push(AggregatorAction::Submit(SubmitAction::Evm(EvmSubmitAction {
+                    chain: chain_key,
+                    address: EvmAddress { raw_bytes: address.to_vec() },
+                    gas_price: None,
+                })));
             }
         }
+
+        Ok(actions)
     }
 
-    fn handle_timer_callback(input: AggregatorInput) -> Result<Vec<AggregatorAction>, String> {
-        process_submission(input, true)
+    fn handle_timer_callback(_input: AggregatorInput) -> Result<Vec<AggregatorAction>, String> {
+        Ok(vec![])
     }
 
     fn handle_submit_callback(
         _input: AggregatorInput,
-        tx_result: Result<AnyTxHash, String>,
+        _tx_result: Result<AnyTxHash, String>,
     ) -> Result<(), String> {
-        match tx_result {
-            Ok(_) => Ok(()),
-            Err(_) => Ok(()),
-        }
+        Ok(())
     }
-}
-
-fn process_submission(
-    input: AggregatorInput,
-    validate_tx: bool,
-) -> Result<Vec<AggregatorAction>, String> {
-    let workflow = host::get_workflow().workflow;
-
-    let submit_config = match workflow.submit {
-        Submit::None => unreachable!(),
-        Submit::Aggregator(aggregator_submit) => aggregator_submit.component.config,
-    };
-
-    if submit_config.is_empty() {
-        return Err("Workflow submit component config is empty".to_string());
-    }
-
-    let mut actions = Vec::new();
-
-    if validate_tx && !utils::is_valid_tx(input.trigger_action.data)? {
-        return Ok(actions);
-    }
-
-    for (chain_key, service_handler_address) in submit_config {
-        if host::get_evm_chain_config(&chain_key).is_some() {
-            let address: alloy_primitives::Address = service_handler_address
-                .parse()
-                .map_err(|e| format!("Failed to parse address for '{chain_key}': {e}"))?;
-
-            // Get gas price from Etherscan if configured.
-            // Will fail the entire operation if API key is configured but fetching fails.
-            let gas_price = gas_oracle::get_gas_price()?;
-
-            let submit_action = SubmitAction::Evm(EvmSubmitAction {
-                chain: chain_key.to_string(),
-                address: EvmAddress { raw_bytes: address.to_vec() },
-                gas_price: gas_price.map(|x| x.into()),
-            });
-
-            actions.push(AggregatorAction::Submit(submit_action));
-        } else if host::get_cosmos_chain_config(&chain_key).is_some() {
-            todo!("Cosmos support coming soon...")
-        } else {
-            // Not a chain config key — skip (config may contain non-chain values)
-            continue;
-        }
-    }
-
-    Ok(actions)
 }
 
 export!(Component with_types_in bindings);
