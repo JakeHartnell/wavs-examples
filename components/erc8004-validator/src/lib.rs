@@ -3,7 +3,7 @@ pub mod bindings;
 mod trigger;
 
 use crate::bindings::{export, Guest, TriggerAction, WasmResponse};
-use alloy_primitives::{keccak256, FixedBytes};
+use alloy_primitives::keccak256;
 use anyhow::Result;
 use trigger::{decode_trigger_event, encode_validation_output, Destination};
 
@@ -12,10 +12,10 @@ export!(Component with_types_in bindings);
 
 /// Synchronous HTTP GET using raw WASI bindings.
 ///
-/// wstd 0.5.6 imports WASI @0.2.9 (too new for the WAVS node which supports up to @0.2.3).
-/// By using the raw WASI HTTP bindings from our WIT directly, cargo-component adapts them
-/// to @0.2.3 — compatible with the WAVS node. No async executor, no Reactor, no HashMap,
-/// no wasi:random needed at all.
+/// wstd 0.5.6 imports wasi:random@0.2.9 (incompatible with the WAVS node which
+/// supports up to @0.2.3). By using the raw WASI HTTP bindings from our WIT
+/// directly, cargo-component adapts them to @0.2.3. No async, no Reactor, no
+/// HashMap, no wasi:random at all.
 mod http {
     use crate::bindings::wasi::http::outgoing_handler;
     use crate::bindings::wasi::http::types::{
@@ -101,37 +101,25 @@ impl Guest for Component {
     fn run(action: TriggerAction) -> Result<Vec<WasmResponse>, String> {
         let trigger = decode_trigger_event(action.data).map_err(|e| e.to_string())?;
 
-        // Fetch content at the requestURI
+        // Fetch the content at the request URI
         let content = http::get(&trigger.request_uri)
             .map_err(|e| format!("fetch[{}]: {}", trigger.request_uri, e))?;
 
-        // Compute keccak256 of the fetched content
-        let computed_hash: FixedBytes<32> = keccak256(&content).into();
-
-        // Score: 100 = hash matches (content integrity verified), 0 = mismatch
-        let (response, tag) = if computed_hash == trigger.request_hash {
-            (100u8, "hash-integrity:pass")
-        } else {
-            (0u8, "hash-integrity:fail")
-        };
+        // Compute keccak256 of the fetched bytes
+        // The submit contract compares this against the stored requestHash on-chain
+        let computed_hash = keccak256(&content);
 
         let output = match trigger.dest {
-            Destination::Ethereum => vec![encode_validation_output(
-                trigger.trigger_id,
-                trigger.request_hash,
-                response,
-                tag,
-            )],
+            Destination::Ethereum => {
+                vec![encode_validation_output(trigger.trigger_id, computed_hash.into())]
+            }
             Destination::CliOutput => {
                 // For CLI testing: return a JSON summary
                 let summary = format!(
-                    r#"{{"trigger_id":{},"request_uri":"{}","computed_hash":"0x{}","request_hash":"0x{}","response":{},"tag":"{}"}}"#,
+                    r#"{{"trigger_id":{},"request_uri":"{}","computed_hash":"0x{}"}}"#,
                     trigger.trigger_id,
                     trigger.request_uri,
                     hex::encode(computed_hash.as_slice()),
-                    hex::encode(trigger.request_hash.as_slice()),
-                    response,
-                    tag,
                 );
                 vec![WasmResponse {
                     payload: summary.into_bytes(),

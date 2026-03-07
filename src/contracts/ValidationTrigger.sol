@@ -47,12 +47,18 @@ contract ValidationTrigger is IValidationTypes {
         TriggerInfo memory triggerInfo = TriggerInfo({
             triggerId: triggerId,
             creator: msg.sender,
-            // data = ABI-encoded (requestURI, requestHash)
-            data: abi.encode(requestURI, requestHash)
+            // data = raw URI bytes (same pattern as WavsTrigger's string data field)
+            // The requestHash is stored in the requests mapping for on-chain comparison
+            data: bytes(requestURI)
         });
 
         emit NewTrigger(abi.encode(triggerInfo));
         emit ValidationRequested(triggerId, msg.sender, requestURI, requestHash);
+    }
+
+    /// @notice Returns the full request struct for a given trigger ID
+    function getRequest(TriggerId triggerId) external view returns (ValidationRequest memory) {
+        return requests[triggerId];
     }
 
     /// @notice Returns all trigger IDs submitted by an address

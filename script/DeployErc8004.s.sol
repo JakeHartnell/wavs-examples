@@ -7,6 +7,7 @@ import {ValidationTrigger} from "contracts/ValidationTrigger.sol";
 import {ValidationSubmit} from "contracts/ValidationSubmit.sol";
 import {SimpleServiceManager} from "contracts/SimpleServiceManager.sol";
 
+
 /// @title DeployErc8004
 /// @notice Deploys the three contracts needed for the ERC-8004 WAVS validator example.
 ///
@@ -28,7 +29,8 @@ contract DeployErc8004 is Script {
 
         // 2. Deploy trigger and submit contracts
         ValidationTrigger trigger = new ValidationTrigger();
-        ValidationSubmit submit = new ValidationSubmit(serviceManager);
+        // Submit contract needs trigger address to look up expected hashes
+        ValidationSubmit submit = new ValidationSubmit(serviceManager, trigger);
 
         // 3. Configure quorum: single operator, threshold = 1
         serviceManager.setThresholdWeight(1);

@@ -6,9 +6,9 @@
 #   1. Builds erc8004-validator + aggregator WASM components
 #   2. Deploys ValidationTrigger, SimpleServiceManager, ValidationSubmit contracts
 #   3. Uploads WASM components to the WAVS node
-#   4. Registers the service (trigger: ValidationRequested, validator: erc8004-validator)
+#   4. Registers the service (trigger: NewTrigger on ValidationTrigger)
 #   5. Sets operator weight for the signing key
-#   6. Smoke test: submits a real validation request with a known hash, waits for result
+#   6. Smoke test: submits a validation request, waits for result
 #
 # Requires:
 #   - Anvil at $RPC_URL          (default: http://localhost:8545)
@@ -16,9 +16,15 @@
 #     with dev_endpoints_enabled = true
 #   - forge, cast, cargo-component, curl, python3 in PATH
 #
+# Notes:
+#   - allowed_http_hosts must be "all" | "none" | {"only": [...]}  (not "*")
+#   - /dev/services POST requires "status" and "manager" fields
+#   - WAVS watches events from the block the service is registered,
+#     so fire the smoke test AFTER registration completes
+#
 # Usage:
 #   ./scripts/deploy-erc8004.sh
-#   WAVS_URL=http://localhost:8041 RPC_URL=http://localhost:8545 ./scripts/deploy-erc8004.sh
+#   WAVS_URL=http://host.docker.internal:8041 RPC_URL=http://host.docker.internal:8545 ./scripts/deploy-erc8004.sh
 # =============================================================================
 set -euo pipefail
 
@@ -38,7 +44,7 @@ die()     { echo -e "${RED}❌ $*${NC}"; exit 1; }
 # =============================================================================
 info "Building WASM components..."
 cargo component build --release -p erc8004-validator -p aggregator \
-  --target wasm32-wasip1 2>&1 | grep -E "Compiling|Finished|Creating|error"
+  --target wasm32-wasip1 2>&1 | grep -E "Compiling erc|Compiling agg|Finished|Creating|error"
 success "Components built"
 
 VALIDATOR_WASM="target/wasm32-wasip1/release/erc8004_validator.wasm"
@@ -57,9 +63,9 @@ DEPLOY_OUT=$(forge script script/DeployErc8004.s.sol \
   --private-key "$PRIVATE_KEY" \
   2>&1)
 
-TRIGGER_ADDR=$(echo "$DEPLOY_OUT"    | grep "TRIGGER_ADDR="         | tail -1 | cut -d= -f2 | tr -d ' ')
-SM_ADDR=$(echo "$DEPLOY_OUT"         | grep "SERVICE_MANAGER_ADDR=" | tail -1 | cut -d= -f2 | tr -d ' ')
-SUBMIT_ADDR=$(echo "$DEPLOY_OUT"     | grep "SUBMIT_ADDR="          | tail -1 | cut -d= -f2 | tr -d ' ')
+TRIGGER_ADDR=$(echo "$DEPLOY_OUT" | grep "TRIGGER_ADDR="         | tail -1 | cut -d= -f2 | tr -d ' ')
+SM_ADDR=$(echo "$DEPLOY_OUT"      | grep "SERVICE_MANAGER_ADDR=" | tail -1 | cut -d= -f2 | tr -d ' ')
+SUBMIT_ADDR=$(echo "$DEPLOY_OUT"  | grep "SUBMIT_ADDR="          | tail -1 | cut -d= -f2 | tr -d ' ')
 
 [ -n "$TRIGGER_ADDR" ] || die "Failed to parse TRIGGER_ADDR from forge output:\n$DEPLOY_OUT"
 [ -n "$SM_ADDR" ]      || die "Failed to parse SERVICE_MANAGER_ADDR"
@@ -74,8 +80,7 @@ echo "  ValidationSubmit:     $SUBMIT_ADDR"
 # 3. Compute NewTrigger event hash
 # =============================================================================
 info "Computing NewTrigger event hash..."
-EVENT_SIG="NewTrigger(bytes)"
-EVENT_HASH=$(cast keccak "$EVENT_SIG")
+EVENT_HASH=$(cast keccak "NewTrigger(bytes)")
 success "NewTrigger event hash: $EVENT_HASH"
 
 # =============================================================================
@@ -95,13 +100,20 @@ success "Aggregator digest: $AGG_DIGEST"
 
 # =============================================================================
 # 5. Build and save service JSON
+#
+# IMPORTANT: /dev/services POST requires "status" and "manager" fields.
+# allowed_http_hosts must be "all" | "none" | {"only": [...]}  (not "*")
 # =============================================================================
-info "Building service definition..."
+info "Saving service definition..."
 
 SERVICE_JSON=$(python3 -c "
 import json
 print(json.dumps({
   'name': 'erc8004-validator',
+  'status': 'active',
+  'manager': {
+    'evm': {'chain': '$CHAIN_ID', 'address': '$SM_ADDR'}
+  },
   'workflows': {
     'default': {
       'trigger': {
@@ -114,7 +126,7 @@ print(json.dumps({
       'component': {
         'source': {'digest': '$VALIDATOR_DIGEST'},
         'permissions': {
-          'allowed_http_hosts': '*',
+          'allowed_http_hosts': 'all',
           'file_system': False,
           'raw_sockets': False,
           'dns_resolution': True
@@ -150,15 +162,13 @@ success "Service saved, hash: $SERVICE_HASH"
 
 # =============================================================================
 # 6. Set service URI on-chain
+# URI must use 127.0.0.1 (not localhost / host.docker.internal) — the WAVS
+# node fetches this from within the host, not from inside the container
 # =============================================================================
 info "Setting service URI on-chain..."
-# URI must use 127.0.0.1 (not localhost) — WAVS node fetches from host
 SERVICE_URI="http://127.0.0.1:8041/dev/services/$SERVICE_HASH"
-
 cast send "$SM_ADDR" "setServiceURI(string)" "$SERVICE_URI" \
-  --rpc-url "$RPC_URL" \
-  --private-key "$PRIVATE_KEY" \
-  --quiet
+  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 success "ServiceURI set: $SERVICE_URI"
 
 # =============================================================================
@@ -171,15 +181,14 @@ curl -sf -X POST "$WAVS_URL/services" \
   > /dev/null
 success "Service registered"
 
-sleep 2  # Let node assign HD index
+sleep 3  # Let node assign HD index
 
 # =============================================================================
 # 8. Get service ID and signing key
 # =============================================================================
 info "Fetching service ID and signing key..."
 
-SERVICES_RESP=$(curl -sf "$WAVS_URL/services")
-SERVICE_ID=$(echo "$SERVICES_RESP" | python3 -c "
+SERVICE_ID=$(curl -sf "$WAVS_URL/services" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 ids=d.get('service_ids',[])
@@ -200,54 +209,44 @@ success "Signing key: $SIGNING_KEY (HD index $HD_INDEX)"
 # 9. Fund signing key
 # =============================================================================
 info "Funding signing key..."
-cast send "$SIGNING_KEY" \
-  --value 1ether \
-  --rpc-url "$RPC_URL" \
-  --private-key "$PRIVATE_KEY" \
-  --quiet
+cast send "$SIGNING_KEY" --value 1ether \
+  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 success "Funded $SIGNING_KEY with 1 ETH"
 
 # =============================================================================
-# 10. Register operator weight
+# 10. Set operator weight
 # =============================================================================
 info "Setting operator weight..."
 cast send "$SM_ADDR" "setOperatorWeight(address,uint256)" "$SIGNING_KEY" 100 \
-  --rpc-url "$RPC_URL" \
-  --private-key "$PRIVATE_KEY" \
-  --quiet
+  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 success "setOperatorWeight($SIGNING_KEY, 100)"
 
 # =============================================================================
-# 11. Smoke test — submit a validation request with a known-good hash
+# 11. Smoke test — fire trigger AFTER service is registered and watching
+#
+# The WAVS node only sees events from the block it started watching. Fire the
+# trigger AFTER all setup is complete to ensure it's picked up.
+#
+# URL: https://httpbin.org/base64/SGVsbG8gV0FWUw== → returns "Hello WAVS"
+# We don't pre-commit the hash; the validator will compute it and the submit
+# contract stores it for comparison.
 # =============================================================================
-info "Preparing smoke test..."
+info "Firing smoke test trigger..."
+info "Note: trigger must be fired AFTER service is registered — WAVS misses earlier blocks"
 
-# Use a stable public URL and compute its keccak256
-TEST_URL="https://httpbin.org/get"
-info "Fetching $TEST_URL to compute hash..."
-TEST_CONTENT=$(curl -sf "$TEST_URL")
-TEST_HASH=$(echo -n "$TEST_CONTENT" | cast keccak 2>/dev/null || python3 -c "
-import hashlib, sys
-data = sys.stdin.buffer.read()
-print('0x' + hashlib.sha3_256(data).hexdigest())  # fallback
-" <<< "$TEST_CONTENT")
-
-# Note: httpbin responses are dynamic (timestamps change), so the hash will
-# NOT match when the WAVS component fetches it — this tests the hash:fail path.
-# For a hash:pass test, use a static file you control.
-info "Test URL:  $TEST_URL"
-info "Test hash: $TEST_HASH (likely hash:fail since httpbin is dynamic)"
-info "Submitting validation request..."
+TEST_URL="https://httpbin.org/base64/SGVsbG8gV0FWUw=="
+# keccak256("Hello WAVS") — pre-computed. Verify with: cast keccak "Hello WAVS"
+TEST_HASH=$(cast keccak "Hello WAVS")
+info "  URL:  $TEST_URL"
+info "  Hash: $TEST_HASH (keccak256 of expected response)"
 
 cast send "$TRIGGER_ADDR" "requestValidation(string,bytes32)" \
   "$TEST_URL" "$TEST_HASH" \
-  --rpc-url "$RPC_URL" \
-  --private-key "$PRIVATE_KEY" \
-  --quiet
+  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 
 TRIGGER_ID=$(cast call "$TRIGGER_ADDR" "nextTriggerId()(uint64)" --rpc-url "$RPC_URL")
-info "Trigger ID: $TRIGGER_ID — waiting 20s for WAVS to process..."
-sleep 20
+info "Trigger ID: $TRIGGER_ID — waiting 30s for WAVS to process..."
+sleep 30
 
 # =============================================================================
 # 12. Check result
@@ -262,7 +261,7 @@ if [ "$IS_COMPLETE" = "true" ]; then
   echo "  Result: $RESULT"
   echo ""
   echo "════════════════════════════════════════"
-  success "FULL END-TO-END COMPLETE!"
+  success "FULL END-TO-END COMPLETE! ⚡"
   echo "  ValidationTrigger:    $TRIGGER_ADDR"
   echo "  ServiceManager:       $SM_ADDR"
   echo "  ValidationSubmit:     $SUBMIT_ADDR"
@@ -272,13 +271,16 @@ if [ "$IS_COMPLETE" = "true" ]; then
   echo ""
   echo "  To submit your own validation request:"
   echo "  cast send $TRIGGER_ADDR 'requestValidation(string,bytes32)' \\"
-  echo "    '<your-uri>' '<keccak256-of-content>' \\"
+  echo "    '<uri>' \"\$(cast keccak '<expected-content>')\" \\"
   echo "    --rpc-url $RPC_URL --private-key \$PRIVATE_KEY"
 else
   warn "isComplete($TRIGGER_ID) = false — WAVS may still be processing"
-  warn "Try: cast call $SUBMIT_ADDR 'isComplete(uint64)(bool)' $TRIGGER_ID --rpc-url $RPC_URL"
+  warn "If still false after 60s, check WAVS node logs for errors"
   echo ""
-  echo "Contract addresses (for manual debugging):"
+  echo "  Manual check:"
+  echo "  cast call $SUBMIT_ADDR 'isComplete(uint64)(bool)' $TRIGGER_ID --rpc-url $RPC_URL"
+  echo ""
+  echo "Contract addresses:"
   echo "  TRIGGER_ADDR=$TRIGGER_ADDR"
   echo "  SERVICE_MANAGER_ADDR=$SM_ADDR"
   echo "  SUBMIT_ADDR=$SUBMIT_ADDR"
