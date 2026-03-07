@@ -3961,6 +3961,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "weather-oracle"
+version = "1.0.0"
+dependencies = [
+ "alloy-sol-macro",
+ "alloy-sol-types",
+ "anyhow",
+ "serde",
+ "serde_json",
+ "wavs-wasi-utils",
+ "wit-bindgen 0.46.0",
+ "wstd",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"

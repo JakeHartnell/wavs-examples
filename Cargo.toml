@@ -15,6 +15,9 @@ members = [
     # Examples
     "components/echo",
 
+    # Data feed components
+    "components/weather-oracle",
+
     # Legacy / template components (kept for reference)
     "components/evm-price-oracle",
     "components/aggregator",
