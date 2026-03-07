@@ -107,7 +107,7 @@ print(json.dumps({
       'component': {
         'source': {'digest': '$WEATHER_DIGEST'},
         'permissions': {
-          'allowed_http_hosts': 'geocoding-api.open-meteo.com,api.open-meteo.com',
+          'allowed_http_hosts': 'all',
           'file_system': False,
           'raw_sockets': False,
           'dns_resolution': True
@@ -120,7 +120,7 @@ print(json.dumps({
           'component': {
             'source': {'digest': '$AGG_DIGEST'},
             'permissions': {
-              'allowed_http_hosts': '*',
+              'allowed_http_hosts': 'all',
               'file_system': False,
               'raw_sockets': False,
               'dns_resolution': True

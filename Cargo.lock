@@ -3964,14 +3964,14 @@ dependencies = [
 name = "weather-oracle"
 version = "1.0.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-sol-macro",
  "alloy-sol-types",
  "anyhow",
+ "hex",
  "serde",
  "serde_json",
- "wavs-wasi-utils",
  "wit-bindgen 0.46.0",
- "wstd",
 ]
 
 [[package]]
