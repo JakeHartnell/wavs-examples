@@ -18,6 +18,9 @@ members = [
     # Data feed components
     "components/weather-oracle",
 
+    # ERC-8004 validator
+    "components/erc8004-validator",
+
     # Legacy / template components (kept for reference)
     "components/evm-price-oracle",
     "components/aggregator",
