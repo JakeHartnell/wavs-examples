@@ -17,9 +17,13 @@ members = [
 
     # Data feed components
     "components/weather-oracle",
+    "components/llm-oracle",
 
     # ERC-8004 validator
     "components/erc8004-validator",
+
+    # ERC-8128 verifier (RFC 9421 HTTP Message Signatures + Ethereum)
+    "components/erc8128-verifier",
 
     # Legacy / template components (kept for reference)
     "components/evm-price-oracle",

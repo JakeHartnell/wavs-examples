@@ -1,0 +1,31 @@
+[package]
+name = "erc8128-verifier"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+wit-bindgen = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+alloy-primitives = { workspace = true }
+anyhow = { workspace = true }
+base64 = "0.22"
+hex = "0.4"
+# k256 for secp256k1 ecrecover (pure Rust, WASM-safe)
+k256 = { version = "0.13", features = ["ecdsa"] }
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+codegen-units = 1
+opt-level = "s"
+debug = false
+strip = true
+lto = true
+
+[package.metadata.component]
+package = "component:erc8128-verifier"
