@@ -85,10 +85,19 @@ func decodeTriggerInfo(log chainTypes.EvmEventLog) triggerInfo {
 	}
 	inner := raw[innerStart : innerStart+int(innerLen)]
 
-	// TriggerInfo ABI layout:
+	// abi.encode(TriggerInfo) for a struct with a dynamic `bytes data` field produces
+	// an ABI offset prefix (0x20 = 32) before the actual tuple encoding.
+	// Rust (alloy) and ethers.js handle this automatically via the ABI spec.
+	// We must skip this 32-byte prefix to reach the actual TriggerInfo tuple.
+	if len(inner) < 32 {
+		panic(fmt.Sprintf("inner too short for ABI offset header: %d bytes", len(inner)))
+	}
+	inner = inner[32:]
+
+	// TriggerInfo ABI layout (after skipping the 32-byte offset prefix):
 	//   [0:32]   triggerId  (uint64, right-aligned)
 	//   [32:64]  creator    (address, right-aligned in 32 bytes)
-	//   [64:96]  offset to data bytes (= 0x60)
+	//   [64:96]  offset to data bytes (= 0x60 = 96)
 	//   [96:128] length of data bytes
 	//   [128..]  data bytes (padded to 32-byte boundary)
 	if len(inner) < 128 {
