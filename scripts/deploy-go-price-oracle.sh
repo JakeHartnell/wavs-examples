@@ -56,11 +56,9 @@ info "Using pre-compiled Go WASM: $GO_WASM ($(du -sh "$GO_WASM" | cut -f1))"
 # 2. Build aggregator WASM
 # =============================================================================
 info "Building aggregator component..."
-cargo component build --release -p aggregator \
-  --target wasm32-wasip1 2>&1 | grep -E "Compiling|Finished|Creating|error"
-AGG_WASM="target/wasm32-wasip1/release/aggregator.wasm"
+AGG_WASM="compiled/aggregator.wasm"
 [ -f "$AGG_WASM" ] || die "aggregator.wasm not found at $AGG_WASM"
-success "Aggregator built"
+success "Aggregator: $AGG_WASM"
 
 # =============================================================================
 # 3. Deploy contracts
@@ -113,56 +111,50 @@ success "Aggregator digest: $AGG_DIGEST"
 # =============================================================================
 info "Saving service definition..."
 
-SERVICE_JSON=$(python3 -c "
-import json
-print(json.dumps({
-  'name': 'golang-evm-price-oracle',
-  'status': 'active',
-  'manager': {'evm': {'chain': '$CHAIN_ID', 'address': '$SM_ADDR'}},
-  'workflows': {
-    'default': {
-      'trigger': {
-        'evm_contract_event': {
-          'chain': '$CHAIN_ID',
-          'address': '$TRIGGER_ADDR',
-          'event_hash': '$EVENT_HASH'
+# Export vars so the Python subprocess can read them via os.environ
+export SM_ADDR TRIGGER_ADDR SUBMIT_ADDR EVENT_HASH GO_DIGEST AGG_DIGEST CHAIN_ID
+
+# Write to file to avoid bash/Python quoting issues with $CHAIN_ID (contains ':')
+python3 - <<PYEOF
+import json, os
+svc = {
+  "name": "golang-evm-price-oracle",
+  "status": "active",
+  "manager": {"evm": {"chain": os.environ["CHAIN_ID"], "address": os.environ["SM_ADDR"]}},
+  "workflows": {
+    "default": {
+      "trigger": {
+        "evm_contract_event": {
+          "chain": os.environ["CHAIN_ID"],
+          "address": os.environ["TRIGGER_ADDR"],
+          "event_hash": os.environ["EVENT_HASH"]
         }
       },
-      'component': {
-        'source': {'digest': '$GO_DIGEST'},
-        'permissions': {
-          'allowed_http_hosts': 'all',
-          'file_system': False,
-          'raw_sockets': False,
-          'dns_resolution': True
-        },
-        'env_keys': [],
-        'config': {}
+      "component": {
+        "source": {"digest": os.environ["GO_DIGEST"]},
+        "permissions": {"allowed_http_hosts": "all", "file_system": False, "raw_sockets": False, "dns_resolution": True},
+        "env_keys": [], "config": {}
       },
-      'submit': {
-        'aggregator': {
-          'component': {
-            'source': {'digest': '$AGG_DIGEST'},
-            'permissions': {
-              'allowed_http_hosts': 'all',
-              'file_system': False,
-              'raw_sockets': False,
-              'dns_resolution': True
-            },
-            'env_keys': [],
-            'config': {'$CHAIN_ID': '$SUBMIT_ADDR'}
+      "submit": {
+        "aggregator": {
+          "component": {
+            "source": {"digest": os.environ["AGG_DIGEST"]},
+            "permissions": {"allowed_http_hosts": "all", "file_system": False, "raw_sockets": False, "dns_resolution": True},
+            "env_keys": [], "config": {os.environ["CHAIN_ID"]: os.environ["SUBMIT_ADDR"]}
           },
-          'signature_kind': {'algorithm': 'secp256k1', 'prefix': 'eip191'}
+          "signature_kind": {"algorithm": "secp256k1", "prefix": "eip191"}
         }
       }
     }
   }
-}))
-")
+}
+with open("/tmp/go-price-oracle-svc.json", "w") as f:
+    json.dump(svc, f)
+PYEOF
 
-SERVICE_HASH=$(echo "$SERVICE_JSON" | curl -sf -X POST "$WAVS_URL/dev/services" \
+SERVICE_HASH=$(curl -sf -X POST "$WAVS_URL/dev/services" \
   -H "Content-Type: application/json" \
-  -d @- | python3 -c "import json,sys; print(json.load(sys.stdin)['hash'])")
+  -d @/tmp/go-price-oracle-svc.json | python3 -c "import json,sys; print(json.load(sys.stdin)['hash'])")
 success "Service saved, hash: $SERVICE_HASH"
 
 # =============================================================================
@@ -245,6 +237,10 @@ success "setOperatorWeight($SIGNING_KEY, 100)"
 # 12. Smoke test — fetch price for CMC ID
 # =============================================================================
 info "Firing price oracle trigger for CMC ID: $CMC_ID"
+
+# Capture trigger ID BEFORE firing (nextTriggerId = the ID that will be assigned)
+TRIGGER_ID=$(cast call "$TRIGGER_ADDR" "nextTriggerId()(uint64)" --rpc-url "$RPC_URL")
+
 cast send "$TRIGGER_ADDR" "addTrigger(string)" "$CMC_ID" \
   --rpc-url "$RPC_URL" \
   --private-key "$PRIVATE_KEY" \
@@ -253,8 +249,7 @@ cast send "$TRIGGER_ADDR" "addTrigger(string)" "$CMC_ID" \
 echo "Waiting 20 seconds for WAVS to process..."
 sleep 20
 
-info "Checking result..."
-TRIGGER_ID=$(cast call "$TRIGGER_ADDR" "nextTriggerId()(uint64)" --rpc-url "$RPC_URL")
+info "Checking result for trigger ID $TRIGGER_ID..."
 IS_VALID=$(cast call "$SUBMIT_ADDR" "isValidTriggerId(uint64)(bool)" "$TRIGGER_ID" --rpc-url "$RPC_URL")
 
 if [ "$IS_VALID" = "true" ]; then
