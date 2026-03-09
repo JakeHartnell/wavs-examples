@@ -7,114 +7,6 @@ import (
 	"go.bytecodealliance.org/cm"
 )
 
-// ChainKey represents the string "wavs:types/chain@2.7.0#chain-key".
-//
-// A string mostly following the caip-2 format of namespace:reference, e.g. "eip155:1"
-// for Ethereum mainnet or "cosmos:cosmoshub-4" for Cosmos Hub
-// however, we allow up to 32 characters for the "namespace" part, and we call the
-// "reference" part "chain-id" to confirm with popular usage
-//
-//	type chain-key = string
-type ChainKey string
-
-// EvmTxHash represents the list "wavs:types/chain@2.7.0#evm-tx-hash".
-//
-//	type evm-tx-hash = list<u8>
-type EvmTxHash cm.List[uint8]
-
-// CosmosTxHash represents the string "wavs:types/chain@2.7.0#cosmos-tx-hash".
-//
-// 32 bytes, a keccak hash of an RLP encoded signed transaction
-//
-//	type cosmos-tx-hash = string
-type CosmosTxHash string
-
-// AnyTxHash represents the variant "wavs:types/chain@2.7.0#any-tx-hash".
-//
-//	variant any-tx-hash {
-//		evm(evm-tx-hash),
-//		cosmos(cosmos-tx-hash),
-//	}
-type AnyTxHash cm.Variant[uint8, EvmTxHash, EvmTxHash]
-
-// AnyTxHashEvm returns a [AnyTxHash] of case "evm".
-func AnyTxHashEvm(data EvmTxHash) AnyTxHash {
-	return cm.New[AnyTxHash](0, data)
-}
-
-// Evm returns a non-nil *[EvmTxHash] if [AnyTxHash] represents the variant case "evm".
-func (self *AnyTxHash) Evm() *EvmTxHash {
-	return cm.Case[EvmTxHash](self, 0)
-}
-
-// AnyTxHashCosmos returns a [AnyTxHash] of case "cosmos".
-func AnyTxHashCosmos(data CosmosTxHash) AnyTxHash {
-	return cm.New[AnyTxHash](1, data)
-}
-
-// Cosmos returns a non-nil *[CosmosTxHash] if [AnyTxHash] represents the variant case "cosmos".
-func (self *AnyTxHash) Cosmos() *CosmosTxHash {
-	return cm.Case[CosmosTxHash](self, 1)
-}
-
-var _AnyTxHashStrings = [2]string{
-	"evm",
-	"cosmos",
-}
-
-// String implements [fmt.Stringer], returning the variant case name of v.
-func (v AnyTxHash) String() string {
-	return _AnyTxHashStrings[v.Tag()]
-}
-
-// CosmosAddress represents the record "wavs:types/chain@2.7.0#cosmos-address".
-//
-//	record cosmos-address {
-//		bech32-addr: string,
-//		prefix-len: u32,
-//	}
-type CosmosAddress struct {
-	_          cm.HostLayout `json:"-"`
-	Bech32Addr string        `json:"bech32-addr"`
-
-	// prefix is the first part of the bech32 address
-	PrefixLen uint32 `json:"prefix-len"`
-}
-
-// CosmosEvent represents the record "wavs:types/chain@2.7.0#cosmos-event".
-//
-//	record cosmos-event {
-//		ty: string,
-//		attributes: list<tuple<string, string>>,
-//	}
-type CosmosEvent struct {
-	_          cm.HostLayout      `json:"-"`
-	Ty         string             `json:"ty"`
-	Attributes cm.List[[2]string] `json:"attributes"`
-}
-
-// CosmosChainConfig represents the record "wavs:types/chain@2.7.0#cosmos-chain-config".
-//
-//	record cosmos-chain-config {
-//		chain-id: string,
-//		rpc-endpoint: option<string>,
-//		grpc-endpoint: option<string>,
-//		grpc-web-endpoint: option<string>,
-//		gas-price: f32,
-//		gas-denom: string,
-//		bech32-prefix: string,
-//	}
-type CosmosChainConfig struct {
-	_               cm.HostLayout     `json:"-"`
-	ChainID         string            `json:"chain-id"`
-	RPCEndpoint     cm.Option[string] `json:"rpc-endpoint"`
-	GrpcEndpoint    cm.Option[string] `json:"grpc-endpoint"`
-	GrpcWebEndpoint cm.Option[string] `json:"grpc-web-endpoint"`
-	GasPrice        float32           `json:"gas-price"`
-	GasDenom        string            `json:"gas-denom"`
-	Bech32Prefix    string            `json:"bech32-prefix"`
-}
-
 // EvmAddress represents the record "wavs:types/chain@2.7.0#evm-address".
 //
 //	record evm-address {
@@ -125,6 +17,23 @@ type EvmAddress struct {
 	RawBytes cm.List[uint8] `json:"raw-bytes"`
 }
 
+// ChainKey represents the string "wavs:types/chain@2.7.0#chain-key".
+//
+//	type chain-key = string
+type ChainKey string
+
+// CosmosAddress represents the record "wavs:types/chain@2.7.0#cosmos-address".
+//
+//	record cosmos-address {
+//		bech32-addr: string,
+//		prefix-len: u32,
+//	}
+type CosmosAddress struct {
+	_          cm.HostLayout `json:"-"`
+	Bech32Addr string        `json:"bech32-addr"`
+	PrefixLen  uint32        `json:"prefix-len"`
+}
+
 // EvmEventLogData represents the record "wavs:types/chain@2.7.0#evm-event-log-data".
 //
 //	record evm-event-log-data {
@@ -132,17 +41,17 @@ type EvmAddress struct {
 //		data: list<u8>,
 //	}
 type EvmEventLogData struct {
-	_ cm.HostLayout `json:"-"`
-	// the raw log topics that can be decoded into an event
+	_      cm.HostLayout           `json:"-"`
 	Topics cm.List[cm.List[uint8]] `json:"topics"`
-
-	// the raw log data that can be decoded into an event
-	Data cm.List[uint8] `json:"data"`
+	Data   cm.List[uint8]          `json:"data"`
 }
 
-// EvmEventLog represents the record "wavs:types/chain@2.7.0#evm-event-log".
+// EvmTxHash represents the list "wavs:types/chain@2.7.0#evm-tx-hash".
 //
-// The overall idea is to map alloy_rpc_types_eth::Log<LogData>
+//	type evm-tx-hash = list<u8>
+type EvmTxHash cm.List[uint8]
+
+// EvmEventLog represents the record "wavs:types/chain@2.7.0#evm-event-log".
 //
 //	record evm-event-log {
 //		address: evm-address,
@@ -155,30 +64,25 @@ type EvmEventLogData struct {
 //		tx-index: u64,
 //	}
 type EvmEventLog struct {
-	_ cm.HostLayout `json:"-"`
-	// These two fields are essentially alloy_primitives::Log<LogData>
-	Address     EvmAddress      `json:"address"`
-	Data        EvmEventLogData `json:"data"`
-	TxHash      EvmTxHash       `json:"tx-hash"`
-	BlockNumber uint64          `json:"block-number"`
-	LogIndex    uint64          `json:"log-index"`
-	BlockHash   cm.List[uint8]  `json:"block-hash"`
-
-	// 256 bytes
+	_              cm.HostLayout     `json:"-"`
+	Address        EvmAddress        `json:"address"`
+	Data           EvmEventLogData   `json:"data"`
+	TxHash         EvmTxHash         `json:"tx-hash"`
+	BlockNumber    uint64            `json:"block-number"`
+	LogIndex       uint64            `json:"log-index"`
+	BlockHash      cm.List[uint8]    `json:"block-hash"`
 	BlockTimestamp cm.Option[uint64] `json:"block-timestamp"`
 	TxIndex        uint64            `json:"tx-index"`
 }
 
-// EvmChainConfig represents the record "wavs:types/chain@2.7.0#evm-chain-config".
+// CosmosEvent represents the record "wavs:types/chain@2.7.0#cosmos-event".
 //
-//	record evm-chain-config {
-//		chain-id: string,
-//		ws-endpoints: list<string>,
-//		http-endpoint: option<string>,
+//	record cosmos-event {
+//		ty: string,
+//		attributes: list<tuple<string, string>>,
 //	}
-type EvmChainConfig struct {
-	_            cm.HostLayout     `json:"-"`
-	ChainID      string            `json:"chain-id"`
-	WsEndpoints  cm.List[string]   `json:"ws-endpoints"`
-	HTTPEndpoint cm.Option[string] `json:"http-endpoint"`
+type CosmosEvent struct {
+	_          cm.HostLayout      `json:"-"`
+	Ty         string             `json:"ty"`
+	Attributes cm.List[[2]string] `json:"attributes"`
 }

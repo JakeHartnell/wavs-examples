@@ -4,14 +4,8 @@
 package output
 
 import (
-	"github.com/Lay3rLabs/wavs-examples/components/golang-evm-price-oracle/gen/wavs/types/events"
 	"go.bytecodealliance.org/cm"
 )
-
-// EventID represents the type alias "wavs:operator/output@2.7.0#event-id".
-//
-// See [events.EventID] for more information.
-type EventID = events.EventID
 
 // WasmResponse represents the record "wavs:operator/output@2.7.0#wasm-response".
 //
@@ -21,17 +15,8 @@ type EventID = events.EventID
 //		event-id-salt: option<list<u8>>,
 //	}
 type WasmResponse struct {
-	_ cm.HostLayout `json:"-"`
-	// arbitrary payload returned from the component
-	// and passed on to be signed by the operators
-	Payload cm.List[uint8] `json:"payload"`
-
-	// currently unused
-	Ordering cm.Option[uint64] `json:"ordering"`
-
-	// if not supplied, this will be `trigger-data`
-	// if supplied, make sure this is unique for every response!
-	// for example, using a "message id" from a third-party service
-	// also, it MUST be supplied if multiple responses are returned
+	_           cm.HostLayout             `json:"-"`
+	Payload     cm.List[uint8]            `json:"payload"`
+	Ordering    cm.Option[uint64]         `json:"ordering"`
 	EventIDSalt cm.Option[cm.List[uint8]] `json:"event-id-salt"`
 }

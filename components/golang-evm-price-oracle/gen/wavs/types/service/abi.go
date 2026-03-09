@@ -7,18 +7,6 @@ import (
 	"unsafe"
 )
 
-// CosmosManagerShape is used for storage in variant or result types.
-type CosmosManagerShape struct {
-	_     cm.HostLayout
-	shape [unsafe.Sizeof(CosmosManager{})]byte
-}
-
-// RegistryShape is used for storage in variant or result types.
-type RegistryShape struct {
-	_     cm.HostLayout
-	shape [unsafe.Sizeof(Registry{})]byte
-}
-
 // TriggerBlockIntervalShape is used for storage in variant or result types.
 type TriggerBlockIntervalShape struct {
 	_     cm.HostLayout

@@ -11,6 +11,7 @@ import (
 
 	httphandler "github.com/Lay3rLabs/wavs-examples/components/golang-evm-price-oracle/gen/wasi/http/outgoing-handler"
 	httptypes "github.com/Lay3rLabs/wavs-examples/components/golang-evm-price-oracle/gen/wasi/http/types"
+	"github.com/Lay3rLabs/wavs-examples/components/golang-evm-price-oracle/gen/wasi/io/poll"
 	"go.bytecodealliance.org/cm"
 )
 
@@ -40,7 +41,10 @@ func httpGet(url string) ([]byte, error) {
 	}
 
 	future := result.OK()
-	future.Subscribe().Block()
+	// wasi:io/poll@0.2.9 replaced pollable.Block() with poll.Poll()
+	sub := future.Subscribe()
+	poll.Poll(cm.ToList([]poll.Pollable{sub}))
+	sub.ResourceDrop()
 
 	getResult := future.Get()
 	if getResult.None() {
@@ -78,7 +82,10 @@ func httpGet(url string) ([]byte, error) {
 	var buf []byte
 	emptyReads := 0
 	for {
-		stream.Subscribe().Block()
+		// wasi:io/poll@0.2.9: use Poll() instead of pollable.Block()
+		sub := stream.Subscribe()
+		poll.Poll(cm.ToList([]poll.Pollable{sub}))
+		sub.ResourceDrop()
 		readResult := stream.Read(65536)
 		if readResult.IsErr() {
 			// StreamErrorClosed = normal end of stream
@@ -96,8 +103,8 @@ func httpGet(url string) ([]byte, error) {
 		emptyReads = 0
 	}
 
-	// Finalize body (required by WASI spec)
-	httptypes.IncomingBodyFinish(*body)
+	// wasi:http@0.2.9: IncomingBody.finish() removed; just drop the resource
+	body.ResourceDrop()
 	return buf, nil
 }
 

@@ -14,11 +14,6 @@ import (
 // See [chain.ChainKey] for more information.
 type ChainKey = chain.ChainKey
 
-// EvmAddress represents the type alias "wavs:types/events@2.7.0#evm-address".
-//
-// See [chain.EvmAddress] for more information.
-type EvmAddress = chain.EvmAddress
-
 // EvmEventLog represents the type alias "wavs:types/events@2.7.0#evm-event-log".
 //
 // See [chain.EvmEventLog] for more information.
@@ -38,11 +33,6 @@ type CosmosEvent = chain.CosmosEvent
 //
 // See [core.Timestamp] for more information.
 type Timestamp = core.Timestamp
-
-// EventID represents the list "wavs:types/events@2.7.0#event-id".
-//
-//	type event-id = list<u8>
-type EventID cm.List[uint8]
 
 // TriggerDataEvmContractEvent represents the record "wavs:types/events@2.7.0#trigger-data-evm-contract-event".
 //
@@ -139,8 +129,6 @@ type TriggerDataHypercoreAppend struct {
 }
 
 // TriggerData represents the variant "wavs:types/events@2.7.0#trigger-data".
-//
-// 20-byte unique hash
 //
 //	variant trigger-data {
 //		evm-contract-event(trigger-data-evm-contract-event),
