@@ -21,6 +21,10 @@
 #   - /dev/services POST requires "status" and "manager" fields
 #   - WAVS watches events from the block the service is registered,
 #     so fire the smoke test AFTER registration completes
+#   - If using a fresh Anvil, RESTART the WAVS node first!
+#     WAVS persists its last-processed block in ~/.wavs/data. If the node last
+#     saw Anvil at block 200 and Anvil is now at block 40, it will wait for
+#     blocks > 200 and never fire. A node restart resets the block cursor.
 #
 # Usage:
 #   ./scripts/deploy-erc8004.sh
@@ -258,8 +262,8 @@ cast send "$TRIGGER_ADDR" "requestValidation(string,bytes32)" \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 
 TRIGGER_ID=$(cast call "$TRIGGER_ADDR" "nextTriggerId()(uint64)" --rpc-url "$RPC_URL")
-info "Trigger ID: $TRIGGER_ID — waiting 30s for WAVS to process..."
-sleep 30
+info "Trigger ID: $TRIGGER_ID — waiting 60s for WAVS to process..."
+sleep 60
 
 # =============================================================================
 # 12. Check result
