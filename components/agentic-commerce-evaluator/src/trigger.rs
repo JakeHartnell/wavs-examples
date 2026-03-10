@@ -16,18 +16,6 @@ sol! {
         bytes32 deliverable
     );
 
-    /// AgenticCommerce.getJob return value
-    struct Job {
-        address client;
-        address provider;
-        address evaluator;
-        address hook;
-        string  description;
-        uint256 budget;
-        uint64  expiredAt;
-        uint8   status;  // JobStatus enum
-    }
-
     /// AgenticCommerceEvaluator payload
     struct EvaluationResult {
         uint256 jobId;
@@ -35,17 +23,9 @@ sol! {
         bytes32 attestation;
     }
 
-    /// AgenticCommerce.getJob(jobId) view function
-    function getJob(uint256 jobId) external view returns (
-        address client,
-        address provider,
-        address evaluator,
-        address hook,
-        string  description,
-        uint256 budget,
-        uint64  expiredAt,
-        uint8   status
-    );
+    /// AgenticCommerce.getJobDescription(jobId) — string-only getter.
+    /// Avoids the alloy WASM bug with mixed static/dynamic tuple ABI decode.
+    function getJobDescription(uint256 jobId) external view returns (string memory description);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -57,10 +37,6 @@ pub struct JobSubmittedEvent {
     pub provider:    alloy_primitives::Address,
     pub deliverable: [u8; 32],
     pub url:         String,
-    /// The chain key from the trigger (e.g. "evm:31337")
-    pub chain:       String,
-    /// The AgenticCommerce contract address (from the log)
-    pub acp_address: alloy_primitives::Address,
 }
 
 /// Decode a JobSubmitted event from an EvmContractEvent trigger.
@@ -82,7 +58,7 @@ pub fn decode_trigger_event(trigger_data: TriggerData) -> Result<JobSubmittedEve
             // Fetch job description (URL) via eth_call to getJob(jobId)
             let url = fetch_job_description(&chain, acp_address, job_id)?;
 
-            Ok(JobSubmittedEvent { job_id, provider, deliverable, url, chain, acp_address })
+            Ok(JobSubmittedEvent { job_id, provider, deliverable, url })
         }
 
         TriggerData::Raw(data) => {
@@ -102,14 +78,7 @@ pub fn decode_trigger_event(trigger_data: TriggerData) -> Result<JobSubmittedEve
             deliverable[..len].copy_from_slice(&deliverable_bytes[..len]);
             let url = v["url"].as_str().unwrap_or("").to_string();
 
-            Ok(JobSubmittedEvent {
-                job_id,
-                provider,
-                deliverable,
-                url,
-                chain: "evm:31337".to_string(),
-                acp_address: alloy_primitives::Address::ZERO,
-            })
+            Ok(JobSubmittedEvent { job_id, provider, deliverable, url })
         }
 
         _ => Err(anyhow!("Unsupported trigger data type")),
@@ -135,7 +104,13 @@ pub fn encode_evaluation(job_id: U256, is_complete: bool, attestation: [u8; 32])
 // eth_call: read job.description from AgenticCommerce
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Call AgenticCommerce.getJob(jobId) via JSON-RPC eth_call and return job.description.
+/// Call AgenticCommerce.getJobDescription(jobId) via JSON-RPC eth_call and return the URL.
+///
+/// Uses `getJobDescription` (string-only getter) instead of `getJob` to avoid the
+/// alloy WASM bug: `abi_decode_returns` on mixed static/dynamic tuples (e.g. a struct
+/// containing both `address` and `string`) panics in WASM with "type check failed for
+/// offset (usize)". A pure-string return encodes as `(offset, length, bytes)` which we
+/// decode manually — no alloy decode path needed.
 fn fetch_job_description(
     chain_key: &str,
     acp_address: alloy_primitives::Address,
@@ -150,8 +125,8 @@ fn fetch_job_description(
         .http_endpoint
         .ok_or_else(|| anyhow!("No http_endpoint for chain '{}'", chain_key))?;
 
-    // Encode eth_call: getJob(jobId)
-    let call_data = getJobCall { jobId: job_id }.abi_encode();
+    // Encode eth_call: getJobDescription(jobId)
+    let call_data = getJobDescriptionCall { jobId: job_id }.abi_encode();
     let call_hex = format!("0x{}", hex::encode(&call_data));
     let to_hex = format!("{:?}", acp_address);
 
@@ -183,11 +158,37 @@ fn fetch_job_description(
     let result_bytes = hex::decode(result_hex.trim_start_matches("0x"))
         .map_err(|e| anyhow!("result hex decode: {}", e))?;
 
-    // ABI decode the Job tuple return
-    let decoded = getJobCall::abi_decode_returns(&result_bytes)
-        .map_err(|e| anyhow!("getJob decode: {}", e))?;
+    // Manually decode ABI-encoded string return: (offset=32, length, bytes...)
+    // Avoids alloy's abi_decode_returns which hits a WASM offset bug on string types.
+    //
+    // ABI layout for `returns (string memory)`:
+    //   [0..32]   offset pointer (always 0x20 = 32 for a single dynamic value)
+    //   [32..64]  string byte length (big-endian u256)
+    //   [64..]    UTF-8 string bytes (zero-padded to next 32-byte boundary)
+    if result_bytes.len() < 64 {
+        return Err(anyhow!("eth_call result too short ({} bytes)", result_bytes.len()));
+    }
 
-    Ok(decoded.description)
+    // Read length from bytes [32..64] as u64 then cast to usize.
+    // WASM is 32-bit: usize::from_be_bytes expects [u8; 4], not [u8; 8].
+    // Always use u64::from_be_bytes and cast — safe since strings won't exceed 4GB.
+    let len = u64::from_be_bytes(
+        result_bytes[56..64]
+            .try_into()
+            .map_err(|_| anyhow!("length slice error"))?,
+    ) as usize;
+
+    if result_bytes.len() < 64 + len {
+        return Err(anyhow!(
+            "eth_call result too short for string: need {} got {}",
+            64 + len,
+            result_bytes.len()
+        ));
+    }
+
+    let string_bytes = &result_bytes[64..64 + len];
+    String::from_utf8(string_bytes.to_vec())
+        .map_err(|e| anyhow!("string UTF-8 decode: {}", e))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

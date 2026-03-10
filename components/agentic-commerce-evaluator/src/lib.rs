@@ -25,15 +25,6 @@ impl Guest for Component {
         // ── 3. Compare against the provider's deliverable ───────────────
         let is_complete = computed == event.deliverable;
 
-        println!(
-            "jobId={} provider={} deliverable=0x{} computed=0x{} match={}",
-            event.job_id,
-            event.provider,
-            hex::encode(event.deliverable),
-            hex::encode(computed),
-            is_complete,
-        );
-
         // ── 4. Encode verdict for AgenticCommerceEvaluator.handleSignedEnvelope
         Ok(vec![encode_evaluation(event.job_id, is_complete, computed)])
     }

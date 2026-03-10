@@ -38,13 +38,20 @@ PROVIDER=$(cast wallet address --private-key "$PROVIDER_KEY")
 # Aggregator credential (HD index 0 of WAVS mnemonic) — must be funded
 AGG_CREDENTIAL="0xc63aff4f9B0ebD48B6C9814619cAbfD9a7710A58"
 
-# Service manager address — read from .env or deployed wavs-examples
+# Service manager address — auto-deploy if not provided
 SM_ADDR="${SERVICE_MANAGER_ADDR:-}"
 if [ -z "$SM_ADDR" ]; then
   if [ -f ".env" ]; then
     SM_ADDR=$(grep "^SERVICE_MANAGER_ADDR=" .env | cut -d= -f2 | tr -d '"' | tr -d "'")
   fi
-  [ -z "$SM_ADDR" ] && error "SERVICE_MANAGER_ADDR not set. Deploy wavs-examples first."
+fi
+if [ -z "$SM_ADDR" ]; then
+  info "SERVICE_MANAGER_ADDR not set — deploying SimpleServiceManager..."
+  SM_DEPLOY=$(forge create src/contracts/SimpleServiceManager.sol:SimpleServiceManager \
+    --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --broadcast 2>&1)
+  SM_ADDR=$(echo "$SM_DEPLOY" | grep -oE 'Deployed to: (0x[0-9a-fA-F]{40})' | awk '{print $3}')
+  [ -z "$SM_ADDR" ] && error "Failed to deploy SimpleServiceManager. Output: $SM_DEPLOY"
+  success "SimpleServiceManager deployed: $SM_ADDR"
 fi
 
 # Demo job: verify https://httpbin.org/json
@@ -77,12 +84,12 @@ DEPLOY_OUT=$(SERVICE_MANAGER_ADDR="$SM_ADDR" PROVIDER_ADDR="$PROVIDER" \
 
 echo "$DEPLOY_OUT" | grep -E "^MOCK_TOKEN|^ACP_ADDR|^ACE_ADDR|^HOOK_ADDR|^IDENTITY|^REPUTATION|^PROVIDER" || true
 
-MOCK_TOKEN_ADDR=$(echo "$DEPLOY_OUT" | grep "^MOCK_TOKEN_ADDR=" | cut -d= -f2)
-ACP_ADDR=$(echo "$DEPLOY_OUT"       | grep "^ACP_ADDR=" | cut -d= -f2)
-ACE_ADDR=$(echo "$DEPLOY_OUT"       | grep "^ACE_ADDR=" | cut -d= -f2)
-HOOK_ADDR=$(echo "$DEPLOY_OUT"      | grep "^HOOK_ADDR=" | cut -d= -f2)
-IDENTITY_REGISTRY=$(echo "$DEPLOY_OUT" | grep "^IDENTITY_REGISTRY_ADDR=" | cut -d= -f2)
-REPUTATION_REGISTRY=$(echo "$DEPLOY_OUT" | grep "^REPUTATION_REGISTRY_ADDR=" | cut -d= -f2)
+MOCK_TOKEN_ADDR=$(echo "$DEPLOY_OUT" | grep "MOCK_TOKEN_ADDR=" | cut -d= -f2)
+ACP_ADDR=$(echo "$DEPLOY_OUT"       | grep "ACP_ADDR=" | cut -d= -f2)
+ACE_ADDR=$(echo "$DEPLOY_OUT"       | grep "ACE_ADDR=" | cut -d= -f2)
+HOOK_ADDR=$(echo "$DEPLOY_OUT"      | grep "HOOK_ADDR=" | cut -d= -f2)
+IDENTITY_REGISTRY=$(echo "$DEPLOY_OUT" | grep "IDENTITY_REGISTRY_ADDR=" | cut -d= -f2)
+REPUTATION_REGISTRY=$(echo "$DEPLOY_OUT" | grep "REPUTATION_REGISTRY_ADDR=" | cut -d= -f2)
 
 [ -z "$ACP_ADDR" ] && error "AgenticCommerce deployment failed"
 success "AgenticCommerce:         $ACP_ADDR"
@@ -222,7 +229,18 @@ sleep 3
 # 6. Get signing key + fund it
 # =============================================================================
 SERVICE_ID=$(curl -sf "$WAVS_URL/services" | python3 -c "
-import json,sys; d=json.load(sys.stdin); print(d['service_ids'][-1])")
+import json,sys
+d=json.load(sys.stdin)
+sm = '$SM_ADDR'.lower()
+for i, svc in enumerate(d['services']):
+    mgr_addr = svc.get('manager', {}).get('evm', {}).get('address', '').lower()
+    if mgr_addr == sm:
+        print(d['service_ids'][i])
+        break
+else:
+    # Fallback: last registered
+    print(d['service_ids'][-1])
+")
 success "Service ID: $SERVICE_ID"
 
 SIGNER_RESP=$(curl -sf -X POST "$WAVS_URL/services/signer" \
@@ -250,10 +268,12 @@ info "Demo URL: $DEMO_URL"
 BUDGET="100000000"  # 100 tUSDC (6 decimals)
 NO_EXPIRY="0"
 
-# Compute the correct deliverable: keccak256 of the URL's response body
+# Compute the correct deliverable: keccak256 of the URL's response body.
+# IMPORTANT: pipe directly to cast keccak — do NOT capture via $() first!
+# Bash $() strips trailing newlines, which would produce a different hash than
+# the WAVS component (which hashes the raw HTTP bytes including any trailing newline).
 info "Pre-fetching URL to compute correct deliverable..."
-RESPONSE_BODY=$(curl -sf "$DEMO_URL")
-CORRECT_DELIVERABLE=$(echo -n "$RESPONSE_BODY" | cast keccak)
+CORRECT_DELIVERABLE=$(curl -sf "$DEMO_URL" | cast keccak)
 info "Correct deliverable: $CORRECT_DELIVERABLE"
 
 # Client approves AgenticCommerce to spend tUSDC

@@ -129,5 +129,6 @@ interface IAgenticCommerce {
 
     function getJob(uint256 jobId) external view returns (Job memory);
     function getJobCount() external view returns (uint256);
+    function getJobDescription(uint256 jobId) external view returns (string memory);
     function paymentToken() external view returns (address);
 }

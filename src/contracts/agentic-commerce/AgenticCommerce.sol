@@ -222,6 +222,13 @@ contract AgenticCommerce is IAgenticCommerce {
         return _jobCount;
     }
 
+    /// @notice Returns only the job description (URL).
+    /// @dev Separate from getJob() to avoid alloy WASM ABI decode bug with
+    ///      mixed static/dynamic tuples. WAVS components call this instead.
+    function getJobDescription(uint256 jobId) external view returns (string memory) {
+        return _jobs[jobId].description;
+    }
+
     /// @inheritdoc IAgenticCommerce
     function paymentToken() external view returns (address) {
         return address(_paymentToken);
