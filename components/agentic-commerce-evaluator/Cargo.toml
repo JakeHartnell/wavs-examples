@@ -7,14 +7,14 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
-wit-bindgen    = { workspace = true }
-serde          = { workspace = true }
-serde_json     = { workspace = true }
-alloy-sol-macro = { workspace = true }
-alloy-sol-types = { workspace = true }
+wit-bindgen      = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+alloy-sol-macro  = { workspace = true }
+alloy-sol-types  = { workspace = true }
 alloy-primitives = { workspace = true }
-anyhow         = { workspace = true }
-hex            = "0.4"
+anyhow           = { workspace = true }
+hex              = "0.4"
 
 [lib]
 crate-type = ["cdylib"]
