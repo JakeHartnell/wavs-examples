@@ -1,6 +1,9 @@
+@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/
+@openzeppelin/contracts-upgradeable/=node_modules/@openzeppelin/contracts-upgradeable/
 @openzeppelin-contracts=node_modules/@openzeppelin/contracts/
 forge-std=node_modules/forge-std/src
 @wavs=node_modules/@wavs/solidity/contracts
+@erc8004/=src/erc8004/
 contracts/=src/contracts
 common/=src/common
 interfaces/=src/interfaces

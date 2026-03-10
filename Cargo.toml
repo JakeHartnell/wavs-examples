@@ -25,6 +25,9 @@ members = [
     # ERC-8128 verifier (RFC 9421 HTTP Message Signatures + Ethereum)
     "components/erc8128-verifier",
 
+    # ERC-8183 Agentic Commerce evaluator (WAVS as the trusted evaluator)
+    "components/agentic-commerce-evaluator",
+
     # Legacy / template components (kept for reference)
     "components/evm-price-oracle",
     "components/aggregator",
