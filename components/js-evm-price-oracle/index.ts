@@ -1,93 +1,111 @@
 /**
- * JS/TypeScript WAVS component: EVM Price Oracle
+ * WAVS component: EVM Price Oracle (JavaScript/TypeScript)
  *
- * Fetches a cryptocurrency price from CoinMarketCap by CMC ID
- * and returns it as JSON for on-chain submission.
+ * Triggered on-chain with a CoinMarketCap ID → fetches the price →
+ * returns ABI-encoded DataWithId for on-chain submission.
  *
- * Compiled to WASM using @bytecodealliance/componentize-js 0.18.x.
- *
- * Key constraints:
- * 1. NO ethers.js — WAVS stubs wasi:random as `unreachable`. Ethers calls
- *    crypto.getRandomValues on import → instant trap.
- * 2. Exported `run` must match the generated sync type signature.
- *    componentize-js handles the async/JSPI bridging internally.
- * 3. For the Err variant, throw a plain string (not `new Error(...)`).
- *    The CABI calls utf8Encode(e) directly, requiring a string primitive.
+ * Uses viem for ABI encoding/decoding — pure math, zero crypto dependencies,
+ * works in WAVS without any polyfills.
  */
-import { TriggerAction, WasmResponse } from "./out/wavs_operator_2_7_0.js";
-import { decodeTriggerEvent, encodeOutput, Destination } from "./trigger.js";
+import { decodeAbiParameters, encodeAbiParameters } from "viem";
+import type { TriggerAction, WasmResponse } from "./out/wavs_operator_2_7_0.js";
 
-/**
- * Main entry point exported to the WAVS runtime.
- * WIT: run(trigger-action: trigger-action) -> result<list<wasm-response>, string>
- *
- * Note: declared async because fetch() is used internally; componentize-js
- * JSPI compiles this to a synchronous WIT export via fiber suspension.
- * The return type matches the jco-generated sync signature at the WIT level.
- */
+// ─── ABI schemas ──────────────────────────────────────────────────────────────
+
+// SimpleTrigger.sol emits: event NewTrigger(bytes triggerData)
+//   where triggerData = abi.encode(TriggerInfo{triggerId, creator, data})
+const TRIGGER_INFO_ABI = [{ type: "tuple", components: [
+  { name: "triggerId", type: "uint64"  },
+  { name: "creator",   type: "address" },
+  { name: "data",      type: "bytes"   },
+] }] as const;
+
+// ITypes.sol: struct DataWithId { uint64 triggerId; bytes data; }
+const DATA_WITH_ID_ABI = [{ type: "tuple", components: [
+  { name: "triggerId", type: "uint64" },
+  { name: "data",      type: "bytes"  },
+] }] as const;
+
+// ─── Component entrypoint ─────────────────────────────────────────────────────
+
 export async function run(triggerAction: TriggerAction): Promise<WasmResponse[]> {
   try {
-    const [triggerInfo, destination] = decodeTriggerEvent(triggerAction.data);
-
-    const num = new TextDecoder().decode(triggerInfo.data).trim();
-    const id = parseInt(num, 10);
-    if (isNaN(id)) {
-      throw `Invalid CMC ID: "${num}"`;
+    // Extract raw event bytes depending on trigger source
+    if (triggerAction.data.tag !== "evm-contract-event" && triggerAction.data.tag !== "raw") {
+      throw `Unsupported trigger type: ${triggerAction.data.tag}`;
     }
+    const rawBytes =
+      triggerAction.data.tag === "evm-contract-event"
+        ? triggerAction.data.val.log.data.data
+        : (triggerAction.data.val as Uint8Array);
 
-    const priceFeed = await fetchCryptoPrice(id);
-    const json = JSON.stringify(priceFeed);
-    const encoded = new TextEncoder().encode(json);
+    // componentize-js may pass bytes as plain objects {"0":0,"1":0,...} not Uint8Array
+    const eventData = normalizeBytes(rawBytes);
 
-    switch (destination) {
-      case Destination.Cli:
-        return [{ payload: encoded, ordering: undefined, eventIdSalt: undefined }];
-      case Destination.Ethereum:
-        return [{ payload: encodeOutput(triggerInfo.triggerId, encoded), ordering: undefined, eventIdSalt: undefined }];
-      default:
-        throw `Unknown destination: ${destination}`;
-    }
+    // Decode: event NewTrigger(bytes) wraps abi.encode(TriggerInfo)
+    const [innerBytes] = decodeAbiParameters([{ type: "bytes" }], toHex(eventData));
+    const [{ triggerId, creator: _creator, data }] = decodeAbiParameters(TRIGGER_INFO_ABI, innerBytes);
+
+    // data = CoinMarketCap cryptocurrency ID as a UTF-8 string (e.g. "1" = BTC)
+    const cmcId = parseInt(new TextDecoder().decode(fromHex(data)), 10);
+    if (isNaN(cmcId)) throw `Invalid CMC ID in trigger data`;
+
+    const price = await fetchCryptoPrice(cmcId);
+    const priceBytes = new TextEncoder().encode(JSON.stringify(price));
+
+    // Encode output as DataWithId for on-chain submission
+    const payload = encodeAbiParameters(DATA_WITH_ID_ABI, [{
+      triggerId,
+      data: toHex(priceBytes),
+    }]);
+
+    return [{ payload: fromHex(payload), ordering: undefined, eventIdSalt: undefined }];
   } catch (e) {
-    // Must throw a plain string for the WIT result<T, string> Err variant.
-    // Do NOT throw Error objects — the CABI utf8Encode call expects string primitives.
-    if (typeof e === "string") throw e;
-    throw String(e);
+    // Must throw a string — componentize-js requires a string primitive for Err(string)
+    throw typeof e === "string" ? e : String(e);
   }
 }
 
-// ─── CoinMarketCap API ────────────────────────────────────────────────────────
+// ─── CoinMarketCap ────────────────────────────────────────────────────────────
 
-interface CmcRoot {
-  status: { timestamp: string };
-  data: { symbol: string; statistics: { price: number } };
-}
-
-interface PriceFeedData {
-  symbol: string;
-  price: number;
-  timestamp: string;
-}
-
-async function fetchCryptoPrice(id: number): Promise<PriceFeedData> {
+async function fetchCryptoPrice(id: number) {
   const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/detail?id=${id}&range=1h`;
+  const res = await fetch(url, { headers: {
+    "Accept": "application/json",
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+  }});
+  if (!res.ok) throw `HTTP ${res.status} from CoinMarketCap`;
+  const body = await res.json() as any;
+  return {
+    symbol:    body.data.symbol as string,
+    price:     Math.round(body.data.statistics.price * 100) / 100,
+    timestamp: (body.status.timestamp as string).split(".")[0],
+  };
+}
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "User-Agent":
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-    },
-  });
+// ─── Byte utils ───────────────────────────────────────────────────────────────
 
-  if (!response.ok) {
-    throw `HTTP ${response.status} from CoinMarketCap`;
-  }
+/**
+ * Normalize bytes from WAVS/componentize-js.
+ * The runtime may pass bytes as plain objects {"0":0,"1":0,...} rather than
+ * a proper Uint8Array — this converts either form to a real Uint8Array.
+ */
+function normalizeBytes(data: any): Uint8Array {
+  if (data instanceof Uint8Array) return data;
+  // Plain object with numeric string keys
+  const len = Object.keys(data).filter((k: string) => /^\d+$/.test(k)).length;
+  const arr = new Uint8Array(len);
+  for (let i = 0; i < len; i++) arr[i] = (data[i] as number) ?? 0;
+  return arr;
+}
 
-  const root: CmcRoot = await response.json();
-  const price = Math.round(root.data.statistics.price * 100) / 100;
-  const timestamp = root.status.timestamp.split(".")[0];
+function toHex(bytes: Uint8Array): `0x${string}` {
+  return `0x${Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("")}`;
+}
 
-  return { symbol: root.data.symbol, price, timestamp };
+function fromHex(hex: `0x${string}`): Uint8Array {
+  const s = hex.slice(2);
+  const arr = new Uint8Array(s.length / 2);
+  for (let i = 0; i < arr.length; i++) arr[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+  return arr;
 }

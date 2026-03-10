@@ -9,10 +9,11 @@ wasi-build: $(WAVS_WIT_PACKAGE) node_modules
 	@# 1. Generate TypeScript type bindings from WIT
 	@npx jco types $(WAVS_WIT_PACKAGE) --out-dir out/
 	@# 2. Compile TypeScript → JavaScript
-	@npx tsc --outDir out/ index.ts trigger.ts \
+	@npx tsc --outDir out/ index.ts \
 		--target ES2020 --module ES2020 --moduleResolution bundler \
 		--strict --skipLibCheck true
 	@# 3. Bundle to a single ESM file
+	@# viem's ABI functions are pure math — no crypto deps, no polyfill needed
 	@npx esbuild ./out/index.js \
 		--bundle \
 		--outfile=out/out.js \
@@ -41,7 +42,7 @@ $(WAVS_WIT_PACKAGE):
 	@$(MAKE) build-wit
 
 node_modules:
-	@npm install
+	@npm install --include=dev
 
 .PHONY: wasi-build build-wit
 

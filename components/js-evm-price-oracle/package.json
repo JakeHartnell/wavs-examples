@@ -11,10 +11,14 @@
   "author": "Layer Labs",
   "license": "MIT",
   "devDependencies": {
-    "@bytecodealliance/componentize-js": "^0.18.0",
-    "@bytecodealliance/jco": "^1.10.2",
+    "@bytecodealliance/componentize-js": "^0.18.5",
+    "@bytecodealliance/jco": "^1.17.0",
+    "@types/node": "^25.4.0",
     "esbuild": "^0.25.0",
     "ethers": "^6.13.5",
     "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "viem": "^2.47.1"
   }
 }

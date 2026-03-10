@@ -241,8 +241,8 @@ success "setOperatorWeight($SIGNING_KEY, 100)"
 # =============================================================================
 info "Firing price oracle trigger for CMC ID: $CMC_ID"
 
-# Capture trigger ID BEFORE firing (nextTriggerId = the ID that will be assigned)
-TRIGGER_ID=$(cast call "$TRIGGER_ADDR" "nextTriggerId()(uint64)" --rpc-url "$RPC_URL")
+# Contract increments nextTriggerId BEFORE assigning, so read current value and add 1
+TRIGGER_ID=$(( $(cast call "$TRIGGER_ADDR" "nextTriggerId()(uint64)" --rpc-url "$RPC_URL") + 1 ))
 
 cast send "$TRIGGER_ADDR" "addTrigger(string)" "$CMC_ID" \
   --rpc-url "$RPC_URL" \
