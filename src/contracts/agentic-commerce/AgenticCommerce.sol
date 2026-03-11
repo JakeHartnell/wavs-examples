@@ -82,6 +82,7 @@ contract AgenticCommerce is IAgenticCommerce {
             evaluator:   evaluator,
             hook:        hook,
             description: description,
+            resultUri:   "",
             budget:      0,
             expiredAt:   expiredAt,
             status:      JobStatus.Open
@@ -138,7 +139,23 @@ contract AgenticCommerce is IAgenticCommerce {
         onlyProvider(jobId)
         inStatus(jobId, JobStatus.Funded)
     {
+        _submitInternal(jobId, deliverable, "");
+    }
+
+    /// @inheritdoc IAgenticCommerce
+    function submitWithResult(uint256 jobId, bytes32 deliverable, string calldata resultUri)
+        external
+        onlyProvider(jobId)
+        inStatus(jobId, JobStatus.Funded)
+    {
+        _submitInternal(jobId, deliverable, resultUri);
+    }
+
+    function _submitInternal(uint256 jobId, bytes32 deliverable, string memory resultUri) internal {
         _jobs[jobId].status = JobStatus.Submitted;
+        if (bytes(resultUri).length > 0) {
+            _jobs[jobId].resultUri = resultUri;
+        }
 
         _callHook(jobId, IAgenticCommerce.submit.selector, abi.encode(deliverable), true);
         emit JobSubmitted(jobId, msg.sender, deliverable);
@@ -227,6 +244,12 @@ contract AgenticCommerce is IAgenticCommerce {
     ///      mixed static/dynamic tuples. WAVS components call this instead.
     function getJobDescription(uint256 jobId) external view returns (string memory) {
         return _jobs[jobId].description;
+    }
+
+    /// @notice Returns the result URI set by the worker when submitting.
+    /// @dev Separate getter to avoid alloy WASM ABI decode bug with mixed tuples.
+    function getJobResultUri(uint256 jobId) external view returns (string memory) {
+        return _jobs[jobId].resultUri;
     }
 
     /// @inheritdoc IAgenticCommerce

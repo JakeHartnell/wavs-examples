@@ -28,6 +28,12 @@ members = [
     # ERC-8183 Agentic Commerce evaluator (WAVS as the trusted evaluator)
     "components/agentic-commerce-evaluator",
 
+    # ERC-8183 LLM-based evaluator (WAVS runs LLM inference as verifiable evaluation)
+    "components/llm-commerce-evaluator",
+
+    # ERC-8183 Agentic Commerce worker (WAVS acts as the LLM provider, fulfills jobs)
+    "components/agentic-commerce-worker",
+
     # Legacy / template components (kept for reference)
     "components/evm-price-oracle",
     "components/aggregator",

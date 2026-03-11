@@ -219,16 +219,21 @@ cast send "$SM_ADDR" "setServiceURI(string)" "$SERVICE_URI" \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 success "ServiceURI set on-chain"
 
-curl -sf -X POST "$WAVS_URL/services" \
+REGISTER_RESP=$(curl -sf -X POST "$WAVS_URL/services" \
   -H "Content-Type: application/json" \
-  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$SM_ADDR\"}}}" > /dev/null
+  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$SM_ADDR\"}}}")
 success "Service registered with WAVS node"
 sleep 3
 
 # =============================================================================
 # 6. Get signing key + fund it
 # =============================================================================
-SERVICE_ID=$(curl -sf "$WAVS_URL/services" | python3 -c "
+# service_id is now returned directly from POST /services
+SERVICE_ID=$(echo "$REGISTER_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null || true)
+
+# Fallback: scan /services list (for older node versions without service_id in response)
+if [ -z "$SERVICE_ID" ]; then
+  SERVICE_ID=$(curl -sf "$WAVS_URL/services" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 sm = '$SM_ADDR'.lower()
@@ -238,10 +243,16 @@ for i, svc in enumerate(d['services']):
         print(d['service_ids'][i])
         break
 else:
-    # Fallback: last registered
     print(d['service_ids'][-1])
 ")
-success "Service ID: $SERVICE_ID"
+fi
+
+echo ""
+echo -e "${BOLD}┌─────────────────────────────────────────────────────────────┐${NC}"
+echo -e "${BOLD}│  SERVICE ID: ${GREEN}${SERVICE_ID}${NC}${BOLD}  │${NC}"
+echo -e "${BOLD}│  Logs: ${CYAN}${WAVS_URL}/dev/logs/${SERVICE_ID}${NC}${BOLD}  │${NC}"
+echo -e "${BOLD}└─────────────────────────────────────────────────────────────┘${NC}"
+echo ""
 
 SIGNER_RESP=$(curl -sf -X POST "$WAVS_URL/services/signer" \
   -H "Content-Type: application/json" \

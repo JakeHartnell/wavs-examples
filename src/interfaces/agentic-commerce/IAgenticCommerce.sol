@@ -28,7 +28,8 @@ interface IAgenticCommerce {
         address provider;
         address evaluator;    // Only entity that can complete/reject after Submitted
         address hook;         // Optional hook contract (IACPHook); address(0) = no hook
-        string  description;  // Job brief; for the WAVS demo: the URL to verify
+        string  description;  // Job brief / task prompt
+        string  resultUri;    // Set by provider when submitting — where to fetch the output
         uint256 budget;       // ERC-20 token amount in escrow
         uint64  expiredAt;    // Unix timestamp; 0 = no expiry
         JobStatus status;
@@ -110,8 +111,13 @@ interface IAgenticCommerce {
     function fund(uint256 jobId, uint256 expectedBudget) external;
 
     /// @notice Provider submits deliverable — transitions Funded → Submitted
-    /// @param deliverable keccak256 hash of the work output (e.g. keccak256(url_content))
+    /// @param deliverable keccak256 hash of the work output
     function submit(uint256 jobId, bytes32 deliverable) external;
+
+    /// @notice Provider submits deliverable with result URI — transitions Funded → Submitted
+    /// @param deliverable keccak256 hash of the work output
+    /// @param resultUri   URI where the actual work output can be fetched (e.g. paste.rs URL)
+    function submitWithResult(uint256 jobId, bytes32 deliverable, string calldata resultUri) external;
 
     /// @notice Evaluator marks job complete — transitions Submitted → Completed
     /// @param reason Evaluator's attestation hash (e.g. computed hash confirming deliverable)
@@ -130,5 +136,6 @@ interface IAgenticCommerce {
     function getJob(uint256 jobId) external view returns (Job memory);
     function getJobCount() external view returns (uint256);
     function getJobDescription(uint256 jobId) external view returns (string memory);
+    function getJobResultUri(uint256 jobId) external view returns (string memory);
     function paymentToken() external view returns (address);
 }
