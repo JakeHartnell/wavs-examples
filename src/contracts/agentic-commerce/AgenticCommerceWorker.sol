@@ -66,15 +66,18 @@ contract AgenticCommerceWorker is IWavsServiceHandler {
         // Verify quorum of operator signatures
         _serviceManager.validate(envelope, signatureData);
 
-        // Decode the worker's result
-        (uint256 jobId, bytes32 deliverable, string memory resultUri) =
-            abi.decode(envelope.payload, (uint256, bytes32, string));
+        // Decode the worker's result.
+        // Using only fixed-size types (uint256, bytes32) to avoid ABI edge cases
+        // with dynamic string encoding across WASM/EVM boundaries.
+        // resultUri is logged via WorkerSubmitted event but not passed on-chain.
+        (uint256 jobId, bytes32 deliverable) =
+            abi.decode(envelope.payload, (uint256, bytes32));
 
         if (jobId == 0) revert InvalidJob();
 
-        emit WorkerSubmitted(jobId, deliverable, resultUri);
+        emit WorkerSubmitted(jobId, deliverable, "");
 
-        _acp.submitWithResult(jobId, deliverable, resultUri);
+        _acp.submit(jobId, deliverable);
     }
 
     // =========================================================================

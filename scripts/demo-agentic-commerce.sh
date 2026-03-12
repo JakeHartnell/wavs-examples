@@ -2,17 +2,27 @@
 # =============================================================================
 # demo-agentic-commerce.sh
 #
-# End-to-end demo for the ERC-8183 Agentic Commerce example.
-# WAVS acts as the trusted evaluator: watches JobSubmitted events, fetches the
-# URL from job.description, computes keccak256, and calls complete() or reject().
+# Full autonomous ERC-8183 Agentic Commerce demo — two WAVS services:
+#
+#   1. agentic-commerce-worker   — watches JobFunded events on AgenticCommerce,
+#      fetches the job URL, hashes the body, and calls submitWithResult() via
+#      AgenticCommerceWorker.sol (the autonomous provider).
+#
+#   2. agentic-commerce-evaluator — watches JobSubmitted events, re-fetches the
+#      same URL, verifies the hash matches the deliverable, and calls complete()
+#      or reject() via AgenticCommerceEvaluator.sol.
 #
 # ERC-8004 reputation is written on job settlement via ReputationHook.
+#
+# Flow:
+#   client createJob → fund → [JobFunded] → worker WAVS → submitWithResult
+#   → [JobSubmitted] → evaluator WAVS → complete() → provider paid ⚡
 #
 # Usage:
 #   ./scripts/demo-agentic-commerce.sh
 #
-# Requires: forge, cast, curl, python3, jq (or python3 fallback)
-# Environment: WAVS node + Anvil must be running (see WAVS README)
+# Requires: forge, cast, curl, python3
+# Environment: WAVS node + Anvil must be running
 # =============================================================================
 set -euo pipefail
 
@@ -38,21 +48,27 @@ PROVIDER=$(cast wallet address --private-key "$PROVIDER_KEY")
 # Aggregator credential (HD index 0 of WAVS mnemonic) — must be funded
 AGG_CREDENTIAL="0xc63aff4f9B0ebD48B6C9814619cAbfD9a7710A58"
 
-# Service manager address — auto-deploy if not provided
-SM_ADDR="${SERVICE_MANAGER_ADDR:-}"
-if [ -z "$SM_ADDR" ]; then
-  if [ -f ".env" ]; then
-    SM_ADDR=$(grep "^SERVICE_MANAGER_ADDR=" .env | cut -d= -f2 | tr -d '"' | tr -d "'")
-  fi
-fi
-if [ -z "$SM_ADDR" ]; then
-  info "SERVICE_MANAGER_ADDR not set — deploying SimpleServiceManager..."
-  SM_DEPLOY=$(forge create src/contracts/SimpleServiceManager.sol:SimpleServiceManager \
+# Helper: deploy a SimpleServiceManager; echoes address to stdout
+deploy_sm_contract() {
+  local label="$1"
+  local out
+  out=$(forge create src/contracts/SimpleServiceManager.sol:SimpleServiceManager \
     --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --broadcast 2>&1)
-  SM_ADDR=$(echo "$SM_DEPLOY" | grep -oE 'Deployed to: (0x[0-9a-fA-F]{40})' | awk '{print $3}')
-  [ -z "$SM_ADDR" ] && error "Failed to deploy SimpleServiceManager. Output: $SM_DEPLOY"
-  success "SimpleServiceManager deployed: $SM_ADDR"
-fi
+  local addr
+  addr=$(echo "$out" | grep -oE 'Deployed to: (0x[0-9a-fA-F]{40})' | awk '{print $3}')
+  [ -z "$addr" ] && { error "Failed to deploy $label SM"; }
+  success "$label SM deployed: $addr" >&2
+  echo "$addr"
+}
+
+# Deploy two separate service managers:
+# - WORKER_SM   → used by AgenticCommerceWorker.sol for validate()
+# - EVALUATOR_SM → used by AgenticCommerceEvaluator.sol for validate()
+# Each WAVS service also registers against its own SM.
+info "Deploying service managers (worker + evaluator)..."
+WORKER_SM_ADDR=$(deploy_sm_contract "Worker")
+EVALUATOR_SM_ADDR=$(deploy_sm_contract "Evaluator")
+
 
 # Demo job: verify https://httpbin.org/json
 DEMO_URL="https://httpbin.org/json"
@@ -63,11 +79,12 @@ echo -e "${BOLD}═════════════════════�
 echo -e "${BOLD}  ERC-8183 Agentic Commerce Demo — WAVS as Evaluator  ⚡${NC}"
 echo -e "${BOLD}════════════════════════════════════════════════════════════════${NC}"
 echo ""
-info "Deployer:  $DEPLOYER"
-info "Provider:  $PROVIDER"
-info "RPC:       $RPC_URL"
-info "WAVS:      $WAVS_URL"
-info "SM:        $SM_ADDR"
+info "Deployer:     $DEPLOYER"
+info "Provider:     $PROVIDER"
+info "RPC:          $RPC_URL"
+info "WAVS:         $WAVS_URL"
+info "Worker SM:    $WORKER_SM_ADDR"
+info "Evaluator SM: $EVALUATOR_SM_ADDR"
 echo ""
 
 # =============================================================================
@@ -75,7 +92,10 @@ echo ""
 # =============================================================================
 info "Deploying Agentic Commerce contracts..."
 
-DEPLOY_OUT=$(SERVICE_MANAGER_ADDR="$SM_ADDR" PROVIDER_ADDR="$PROVIDER" \
+DEPLOY_OUT=$(SERVICE_MANAGER_ADDR="$WORKER_SM_ADDR" \
+  WORKER_SM_ADDR="$WORKER_SM_ADDR" \
+  EVALUATOR_SM_ADDR="$EVALUATOR_SM_ADDR" \
+  PROVIDER_ADDR="$PROVIDER" \
   forge script script/DeployAgenticCommerce.s.sol \
     --rpc-url "$RPC_URL" \
     --broadcast \
@@ -87,62 +107,72 @@ echo "$DEPLOY_OUT" | grep -E "^MOCK_TOKEN|^ACP_ADDR|^ACE_ADDR|^HOOK_ADDR|^IDENTI
 MOCK_TOKEN_ADDR=$(echo "$DEPLOY_OUT" | grep "MOCK_TOKEN_ADDR=" | cut -d= -f2)
 ACP_ADDR=$(echo "$DEPLOY_OUT"       | grep "ACP_ADDR=" | cut -d= -f2)
 ACE_ADDR=$(echo "$DEPLOY_OUT"       | grep "ACE_ADDR=" | cut -d= -f2)
+ACW_ADDR=$(echo "$DEPLOY_OUT"       | grep "ACW_ADDR=" | cut -d= -f2)
 HOOK_ADDR=$(echo "$DEPLOY_OUT"      | grep "HOOK_ADDR=" | cut -d= -f2)
 IDENTITY_REGISTRY=$(echo "$DEPLOY_OUT" | grep "IDENTITY_REGISTRY_ADDR=" | cut -d= -f2)
 REPUTATION_REGISTRY=$(echo "$DEPLOY_OUT" | grep "REPUTATION_REGISTRY_ADDR=" | cut -d= -f2)
 
 [ -z "$ACP_ADDR" ] && error "AgenticCommerce deployment failed"
-success "AgenticCommerce:         $ACP_ADDR"
+[ -z "$ACW_ADDR" ] && error "AgenticCommerceWorker deployment failed"
+success "AgenticCommerce:          $ACP_ADDR"
 success "AgenticCommerceEvaluator: $ACE_ADDR"
-success "ReputationHook:          $HOOK_ADDR"
-success "IdentityRegistry:        $IDENTITY_REGISTRY"
-success "ReputationRegistry:      $REPUTATION_REGISTRY"
-success "MockERC20 (tUSDC):       $MOCK_TOKEN_ADDR"
+success "AgenticCommerceWorker:    $ACW_ADDR  ← autonomous provider"
+success "ReputationHook:           $HOOK_ADDR"
+success "IdentityRegistry:         $IDENTITY_REGISTRY"
+success "ReputationRegistry:       $REPUTATION_REGISTRY"
+success "MockERC20 (tUSDC):        $MOCK_TOKEN_ADDR"
 
 # =============================================================================
-# 2. Register provider as ERC-8004 agent
+# 2. Register AgenticCommerceWorker as ERC-8004 agent (autonomous provider)
 # =============================================================================
-info "Registering provider as ERC-8004 agent..."
+info "Registering AgenticCommerceWorker (autonomous provider) as ERC-8004 agent..."
 
-AGENT_ID_RAW=$(cast send "$IDENTITY_REGISTRY" "register()(uint256)" \
-  --rpc-url "$RPC_URL" --private-key "$PROVIDER_KEY" \
-  --json | python3 -c "import sys,json; print(json.load(sys.stdin)['logs'][0]['topics'][1])" 2>/dev/null || echo "")
-
-if [ -z "$AGENT_ID_RAW" ]; then
-  # Fallback: check getLastId() before and after
-  AGENT_ID=$(cast call "$IDENTITY_REGISTRY" "getLastId()(uint256)" --rpc-url "$RPC_URL")
-  cast send "$IDENTITY_REGISTRY" "register()" \
-    --rpc-url "$RPC_URL" --private-key "$PROVIDER_KEY" --quiet
-  AGENT_ID=$(cast call "$IDENTITY_REGISTRY" "getLastId()(uint256)" --rpc-url "$RPC_URL")
-  AGENT_ID=$(( AGENT_ID - 1 ))
-else
-  AGENT_ID=$(python3 -c "print(int('$AGENT_ID_RAW', 16))")
-fi
-
-success "Provider ERC-8004 agentId: $AGENT_ID"
-
-# Link provider → agentId in ReputationHook
-cast send "$HOOK_ADDR" "registerAgent(address,uint256)" "$PROVIDER" "$AGENT_ID" \
+# Deployer registers on behalf of the worker contract address
+AGENT_ID_BEFORE=$(cast call "$IDENTITY_REGISTRY" "getLastId()(uint256)" --rpc-url "$RPC_URL")
+cast send "$IDENTITY_REGISTRY" "register()" \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
-success "Hook: provider linked to agentId $AGENT_ID"
+AGENT_ID=$(cast call "$IDENTITY_REGISTRY" "getLastId()(uint256)" --rpc-url "$RPC_URL")
+AGENT_ID=$(( AGENT_ID - 1 ))
+
+success "Worker ERC-8004 agentId: $AGENT_ID"
+
+# Link worker contract → agentId in ReputationHook
+cast send "$HOOK_ADDR" "registerAgent(address,uint256)" "$ACW_ADDR" "$AGENT_ID" \
+  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
+success "Hook: worker contract linked to agentId $AGENT_ID"
+
+# Mint tUSDC to deployer (client) — provider is a contract, doesn't need tokens
+cast send "$MOCK_TOKEN_ADDR" "mint(address,uint256)" "$DEPLOYER" "10000000000" \
+  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet 2>/dev/null || true
 
 # =============================================================================
-# 3. Upload WAVS component
+# 3. Build and upload WAVS components
 # =============================================================================
-info "Building and uploading WAVS component..."
+info "Building and uploading WAVS components..."
 
-WASM_PATH="target/wasm32-wasip1/release/agentic_commerce_evaluator.wasm"
-if [ ! -f "$WASM_PATH" ]; then
-  info "Building WASM component..."
+# ── Evaluator ────────────────────────────────────────────────────────────────
+EVALUATOR_WASM="target/wasm32-wasip1/release/agentic_commerce_evaluator.wasm"
+if [ ! -f "$EVALUATOR_WASM" ]; then
+  info "Building evaluator WASM..."
   cargo component build -p agentic-commerce-evaluator --release --quiet
 fi
-
 EVALUATOR_DIGEST=$(curl -sf -X POST "$WAVS_URL/dev/components" \
   -H "Content-Type: application/wasm" \
-  --data-binary "@$WASM_PATH" | python3 -c "import sys,json; print(json.load(sys.stdin)['digest'])")
-success "Component uploaded: $EVALUATOR_DIGEST"
+  --data-binary "@$EVALUATOR_WASM" | python3 -c "import sys,json; print(json.load(sys.stdin)['digest'])")
+success "Evaluator uploaded:  $EVALUATOR_DIGEST"
 
-# Upload aggregator component
+# ── Worker ───────────────────────────────────────────────────────────────────
+WORKER_WASM="target/wasm32-wasip1/release/agentic_commerce_worker.wasm"
+if [ ! -f "$WORKER_WASM" ]; then
+  info "Building worker WASM..."
+  cargo component build -p agentic-commerce-worker --release 2>&1 | grep -v "^warning"
+fi
+WORKER_DIGEST=$(curl -sf -X POST "$WAVS_URL/dev/components" \
+  -H "Content-Type: application/wasm" \
+  --data-binary "@$WORKER_WASM" | python3 -c "import sys,json; print(json.load(sys.stdin)['digest'])")
+success "Worker uploaded:     $WORKER_DIGEST"
+
+# ── Aggregator ───────────────────────────────────────────────────────────────
 AGG_WASM="target/wasm32-wasip1/release/aggregator.wasm"
 if [ ! -f "$AGG_WASM" ]; then
   cargo component build -p aggregator --release --quiet
@@ -153,25 +183,143 @@ AGG_DIGEST=$(curl -sf -X POST "$WAVS_URL/dev/components" \
 success "Aggregator uploaded: $AGG_DIGEST"
 
 # =============================================================================
-# 4. Register WAVS service
+# 4. Register WAVS services — both use the same SM as the deployed contracts
 # =============================================================================
-info "Computing JobSubmitted event hash..."
-EVENT_HASH=$(cast keccak "JobSubmitted(uint256,address,bytes32)")
-success "event_hash: $EVENT_HASH"
+# ACW is deployed with WORKER_SM_ADDR; ACE with EVALUATOR_SM_ADDR.
+# Each WAVS service must register against the same SM its contract calls validate() on.
 
-info "Building service manifest..."
-SERVICE_JSON=$(python3 -c "
+# register_service <label> <sm_addr> <manifest_json>
+# Status → stderr; service_id → stdout.
+register_service() {
+  local label="$1"
+  local sm="$2"
+  local manifest="$3"
+
+  local hash
+  hash=$(echo "$manifest" | curl -sf -X POST "$WAVS_URL/dev/services" \
+    -H "Content-Type: application/json" -d @- | python3 -c "import json,sys; print(json.load(sys.stdin)['hash'])")
+  echo -e "${GREEN}[OK]${NC}    $label manifest: $hash" >&2
+
+  local uri="http://127.0.0.1:8041/dev/services/$hash"
+  cast send "$sm" "setServiceURI(string)" "$uri" \
+    --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
+
+  local reg
+  reg=$(curl -sf -X POST "$WAVS_URL/services" \
+    -H "Content-Type: application/json" \
+    -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$sm\"}}}")
+
+  local sid
+  sid=$(echo "$reg" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null || true)
+  if [ -z "$sid" ]; then
+    sid=$(curl -sf "$WAVS_URL/services" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+sm_l='$sm'.lower()
+sids=d.get('service_ids',[])
+svcs=d.get('services',[])
+for i,svc in enumerate(svcs):
+    if svc.get('manager',{}).get('evm',{}).get('address','').lower()==sm_l:
+        print(sids[i]); break
+else:
+    print(sids[-1] if sids else '')
+")
+  fi
+  echo -e "${GREEN}[OK]${NC}    $label service_id: $sid" >&2
+  echo "$sid"
+}
+
+# fund_service <label> <sm_addr> <service_id>
+# Derives signing key, funds it with ETH, sets operator weight in the SM.
+fund_service() {
+  local label="$1"
+  local sm="$2"
+  local sid="$3"
+
+  local signer_resp
+  signer_resp=$(curl -sf -X POST "$WAVS_URL/services/signer" \
+    -H "Content-Type: application/json" \
+    -d "{\"service_id\":\"$sid\",\"workflow_id\":\"default\",\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$sm\"}}}")
+
+  local key hd
+  key=$(echo "$signer_resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['secp256k1']['evm_address'])")
+  hd=$(echo "$signer_resp"  | python3 -c "import json,sys; print(json.load(sys.stdin)['secp256k1']['hd_index'])")
+  success "$label signing key: $key (HD $hd)"
+
+  cast send "$key" --value 1ether --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
+  # Weight in the SM that this service's contract calls validate() on
+  cast send "$sm" "setOperatorWeight(address,uint256)" "$key" 100 \
+    --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
+}
+
+# ── Worker service: watches JobFunded → submitWithResult via ACW ─────────────
+info "Registering worker service (JobFunded → submitWithResult)..."
+JOBFUNDED_HASH=$(cast keccak "JobFunded(uint256,uint256)")
+WORKER_MANIFEST=$(python3 -c "
 import json
 print(json.dumps({
-  'name': 'agentic-commerce-evaluator',
-  'manager': {'evm': {'chain': '$CHAIN_ID', 'address': '$SM_ADDR'}},
+  'name': 'agentic-commerce-worker',
+  'manager': {'evm': {'chain': '$CHAIN_ID', 'address': '$WORKER_SM_ADDR'}},
   'workflows': {
     'default': {
       'trigger': {
         'evm_contract_event': {
           'chain': '$CHAIN_ID',
           'address': '$ACP_ADDR',
-          'event_hash': '$EVENT_HASH'
+          'event_hash': '$JOBFUNDED_HASH'
+        }
+      },
+      'component': {
+        'source': {'digest': '$WORKER_DIGEST'},
+        'permissions': {
+          'allowed_http_hosts': 'all',
+          'file_system': False,
+          'raw_sockets': False,
+          'dns_resolution': True
+        },
+        'env_keys': [],
+        'config': {}
+      },
+      'submit': {
+        'aggregator': {
+          'component': {
+            'source': {'digest': '$AGG_DIGEST'},
+            'permissions': {
+              'allowed_http_hosts': 'none',
+              'file_system': False,
+              'raw_sockets': False,
+              'dns_resolution': False
+            },
+            'env_keys': [],
+            'config': {'$CHAIN_ID': '$ACW_ADDR'}
+          },
+          'signature_kind': {'algorithm': 'secp256k1', 'prefix': 'eip191'}
+        }
+      }
+    }
+  },
+  'status': 'active'
+}))
+")
+WORKER_SERVICE_ID=$(register_service "Worker" "$WORKER_SM_ADDR" "$WORKER_MANIFEST")
+sleep 2
+fund_service "Worker" "$WORKER_SM_ADDR" "$WORKER_SERVICE_ID"
+
+# ── Evaluator service: watches JobSubmitted → complete/reject via ACE ────────
+info "Registering evaluator service (JobSubmitted → complete/reject)..."
+JOBSUBMITTED_HASH=$(cast keccak "JobSubmitted(uint256,address,bytes32)")
+EVALUATOR_MANIFEST=$(python3 -c "
+import json
+print(json.dumps({
+  'name': 'agentic-commerce-evaluator',
+  'manager': {'evm': {'chain': '$CHAIN_ID', 'address': '$EVALUATOR_SM_ADDR'}},
+  'workflows': {
+    'default': {
+      'trigger': {
+        'evm_contract_event': {
+          'chain': '$CHAIN_ID',
+          'address': '$ACP_ADDR',
+          'event_hash': '$JOBSUBMITTED_HASH'
         }
       },
       'component': {
@@ -206,122 +354,72 @@ print(json.dumps({
   'status': 'active'
 }))
 ")
+EVALUATOR_SERVICE_ID=$(register_service "Evaluator" "$EVALUATOR_SM_ADDR" "$EVALUATOR_MANIFEST")
+sleep 2
+fund_service "Evaluator" "$EVALUATOR_SM_ADDR" "$EVALUATOR_SERVICE_ID"
 
-SERVICE_HASH=$(echo "$SERVICE_JSON" | curl -sf -X POST "$WAVS_URL/dev/services" \
-  -H "Content-Type: application/json" -d @- | python3 -c "import json,sys; print(json.load(sys.stdin)['hash'])")
-success "Service manifest saved: $SERVICE_HASH"
-
-# =============================================================================
-# 5. Set service URI on-chain + register with WAVS node
-# =============================================================================
-SERVICE_URI="http://127.0.0.1:8041/dev/services/$SERVICE_HASH"
-cast send "$SM_ADDR" "setServiceURI(string)" "$SERVICE_URI" \
-  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
-success "ServiceURI set on-chain"
-
-REGISTER_RESP=$(curl -sf -X POST "$WAVS_URL/services" \
-  -H "Content-Type: application/json" \
-  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$SM_ADDR\"}}}")
-success "Service registered with WAVS node"
-sleep 3
-
-# =============================================================================
-# 6. Get signing key + fund it
-# =============================================================================
-# service_id is now returned directly from POST /services
-SERVICE_ID=$(echo "$REGISTER_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null || true)
-
-# Fallback: scan /services list (for older node versions without service_id in response)
-if [ -z "$SERVICE_ID" ]; then
-  SERVICE_ID=$(curl -sf "$WAVS_URL/services" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-sm = '$SM_ADDR'.lower()
-for i, svc in enumerate(d['services']):
-    mgr_addr = svc.get('manager', {}).get('evm', {}).get('address', '').lower()
-    if mgr_addr == sm:
-        print(d['service_ids'][i])
-        break
-else:
-    print(d['service_ids'][-1])
-")
-fi
-
-echo ""
-echo -e "${BOLD}┌─────────────────────────────────────────────────────────────┐${NC}"
-echo -e "${BOLD}│  SERVICE ID: ${GREEN}${SERVICE_ID}${NC}${BOLD}  │${NC}"
-echo -e "${BOLD}│  Logs: ${CYAN}${WAVS_URL}/dev/logs/${SERVICE_ID}${NC}${BOLD}  │${NC}"
-echo -e "${BOLD}└─────────────────────────────────────────────────────────────┘${NC}"
-echo ""
-
-SIGNER_RESP=$(curl -sf -X POST "$WAVS_URL/services/signer" \
-  -H "Content-Type: application/json" \
-  -d "{\"service_id\":\"$SERVICE_ID\",\"workflow_id\":\"default\",\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$SM_ADDR\"}}}")
-
-HD_INDEX=$(echo "$SIGNER_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['secp256k1']['hd_index'])")
-SIGNING_KEY=$(echo "$SIGNER_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['secp256k1']['evm_address'])")
-success "Signing key: $SIGNING_KEY (HD $HD_INDEX)"
-
-cast send "$SIGNING_KEY" --value 1ether --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
+# Fund aggregator credential once
 cast send "$AGG_CREDENTIAL" --value 1ether --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
-cast send "$SM_ADDR" "setOperatorWeight(address,uint256)" "$SIGNING_KEY" 100 \
-  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
-success "Operator funded and weighted"
+
+echo ""
+echo -e "${BOLD}┌─────────────────────────────────────────────────────────────────────┐${NC}"
+echo -e "${BOLD}│  WORKER    service_id: ${GREEN}${WORKER_SERVICE_ID}${NC}${BOLD}  │${NC}"
+echo -e "${BOLD}│  EVALUATOR service_id: ${GREEN}${EVALUATOR_SERVICE_ID}${NC}${BOLD}  │${NC}"
+echo -e "${BOLD}│  Worker  logs: ${CYAN}${WAVS_URL}/dev/logs/${WORKER_SERVICE_ID}${NC}${BOLD}  │${NC}"
+echo -e "${BOLD}│  Evaluator logs: ${CYAN}${WAVS_URL}/dev/logs/${EVALUATOR_SERVICE_ID}${NC}${BOLD}  │${NC}"
+echo -e "${BOLD}└─────────────────────────────────────────────────────────────────────┘${NC}"
+echo ""
 
 # =============================================================================
-# 7. Demo: create job → fund → provider submits → WAVS evaluates
+# 7. Demo: create job → fund → WAVS worker submits → WAVS evaluates (fully autonomous)
 # =============================================================================
 echo ""
 echo -e "${BOLD}── Demo Flow ────────────────────────────────────────────────────${NC}"
 echo ""
 info "Demo URL: $DEMO_URL"
+info "Provider: AgenticCommerceWorker (autonomous) = $ACW_ADDR"
 
 BUDGET="100000000"  # 100 tUSDC (6 decimals)
 NO_EXPIRY="0"
-
-# Compute the correct deliverable: keccak256 of the URL's response body.
-# IMPORTANT: pipe directly to cast keccak — do NOT capture via $() first!
-# Bash $() strips trailing newlines, which would produce a different hash than
-# the WAVS component (which hashes the raw HTTP bytes including any trailing newline).
-info "Pre-fetching URL to compute correct deliverable..."
-CORRECT_DELIVERABLE=$(curl -sf "$DEMO_URL" | cast keccak)
-info "Correct deliverable: $CORRECT_DELIVERABLE"
 
 # Client approves AgenticCommerce to spend tUSDC
 cast send "$MOCK_TOKEN_ADDR" "approve(address,uint256)" "$ACP_ADDR" "$BUDGET" \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 
-# Create job (client = deployer, provider = PROVIDER, evaluator = ACE)
-JOB_COUNT_BEFORE=$(cast call "$ACP_ADDR" "getJobCount()(uint256)" --rpc-url "$RPC_URL")
+# Create job — provider is the AgenticCommerceWorker contract (autonomous)
 cast send "$ACP_ADDR" \
   "createJob(address,address,uint64,string,address)(uint256)" \
-  "$PROVIDER" "$ACE_ADDR" "$NO_EXPIRY" "$DEMO_URL" "$HOOK_ADDR" \
+  "$ACW_ADDR" "$ACE_ADDR" "$NO_EXPIRY" "$DEMO_URL" "$HOOK_ADDR" \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 
 JOB_ID=$(cast call "$ACP_ADDR" "getJobCount()(uint256)" --rpc-url "$RPC_URL")
-success "Job created: jobId=$JOB_ID"
+success "Job created: jobId=$JOB_ID  provider=$ACW_ADDR (worker contract)"
 
-# Set budget + fund
+# Set budget + fund → fires JobFunded → WAVS worker wakes up!
 cast send "$ACP_ADDR" "setBudget(uint256,uint256)" "$JOB_ID" "$BUDGET" \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 cast send "$ACP_ADDR" "fund(uint256,uint256)" "$JOB_ID" "$BUDGET" \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 success "Job funded: $BUDGET tUSDC in escrow"
-
-PROVIDER_BALANCE_BEFORE=$(cast call "$MOCK_TOKEN_ADDR" "balanceOf(address)(uint256)" \
-  "$PROVIDER" --rpc-url "$RPC_URL")
-info "Provider balance before: $PROVIDER_BALANCE_BEFORE tUSDC (raw)"
-
-# Provider submits — this fires JobSubmitted → WAVS wakes up!
-info "Provider submitting deliverable (keccak256 of '$DEMO_URL' response)..."
-cast send "$ACP_ADDR" "submit(uint256,bytes32)" "$JOB_ID" "$CORRECT_DELIVERABLE" \
-  --rpc-url "$RPC_URL" --private-key "$PROVIDER_KEY" --quiet
-success "JobSubmitted event fired! WAVS evaluator watching..."
+success "JobFunded event fired! → WAVS worker will fetch URL, hash body, and submit..."
+echo ""
+info "  The worker WASM will autonomously:"
+info "    1. Decode JobFunded event"
+info "    2. Fetch '$DEMO_URL'"
+info "    3. Compute keccak256(response_body)"
+info "    4. Call AgenticCommerceWorker.handleSignedEnvelope → submitWithResult()"
+info "  Then the evaluator WASM will:"
+info "    5. Decode JobSubmitted event"
+info "    6. Re-fetch '$DEMO_URL', verify hash matches"
+info "    7. Call AgenticCommerceEvaluator.handleSignedEnvelope → complete()"
 
 # =============================================================================
-# 8. Wait for WAVS to evaluate
+# 8. Wait for both WAVS services to process
 # =============================================================================
-info "Waiting ${WAIT_SECS}s for WAVS to process..."
+echo ""
+info "Waiting ${WAIT_SECS}s for worker + evaluator to process..."
+info "  Worker  logs: $WAVS_URL/dev/logs/$WORKER_SERVICE_ID"
+info "  Evaluator logs: $WAVS_URL/dev/logs/$EVALUATOR_SERVICE_ID"
 sleep "$WAIT_SECS"
 
 # =============================================================================
@@ -331,26 +429,37 @@ echo ""
 echo -e "${BOLD}── Results ─────────────────────────────────────────────────────${NC}"
 echo ""
 
-JOB_DATA=$(cast call "$ACP_ADDR" "getJob(uint256)((address,address,address,address,string,uint256,uint64,uint8))" \
+JOB_DATA=$(cast call "$ACP_ADDR" "getJob(uint256)((address,address,address,address,string,string,uint256,uint64,uint8))" \
   "$JOB_ID" --rpc-url "$RPC_URL")
 
 # Status: 0=Open 1=Funded 2=Submitted 3=Completed 4=Rejected 5=Expired
 STATUS=$(echo "$JOB_DATA" | python3 -c "
 import sys, re
-data = sys.stdin.read()
-# Extract last tuple element (status uint8)
-nums = re.findall(r'\d+', data)
+data = sys.stdin.read().strip().strip('()')
+nums = re.findall(r'(?<![0-9a-fA-Fx\.\"])(\b\d+\b)(?!\s*\[)', data)
 if nums: print(nums[-1])
 else: print('?')
 " 2>/dev/null || echo "?")
 
-PROVIDER_BALANCE_AFTER=$(cast call "$MOCK_TOKEN_ADDR" "balanceOf(address)(uint256)" \
-  "$PROVIDER" --rpc-url "$RPC_URL")
+# Extract resultUri from job data (field 6, a string)
+RESULT_URI=$(echo "$JOB_DATA" | python3 -c "
+import sys, re
+data = sys.stdin.read()
+# Find all quoted strings
+strings = re.findall(r'\"([^\"]*)\"', data)
+# Second string is resultUri (first is description/URL)
+print(strings[1] if len(strings) > 1 else '')
+" 2>/dev/null || echo "")
 
-info "Job status raw: $STATUS (3=Completed, 4=Rejected)"
-info "Provider balance after: $PROVIDER_BALANCE_AFTER tUSDC (raw)"
+# Worker contract balance (gets the payment)
+WORKER_BALANCE=$(cast call "$MOCK_TOKEN_ADDR" "balanceOf(address)(uint256)" \
+  "$ACW_ADDR" --rpc-url "$RPC_URL")
 
-# Check ERC-8004 reputation
+info "Job status: $STATUS (3=Completed, 4=Rejected)"
+info "Worker contract balance: $WORKER_BALANCE tUSDC (raw)"
+[ -n "$RESULT_URI" ] && info "Result URI: $RESULT_URI"
+
+# ERC-8004 reputation
 REP_COUNT=$(cast call "$REPUTATION_REGISTRY" \
   "getSummary(uint256,address[],string,string)(uint64,int128,uint8)" \
   "$AGENT_ID" "[]" "" "" --rpc-url "$RPC_URL" | awk 'NR==1{print $1}' 2>/dev/null || echo "?")
@@ -358,24 +467,32 @@ REP_COUNT=$(cast call "$REPUTATION_REGISTRY" \
 case "$STATUS" in
   3)
     echo ""
-    echo -e "${GREEN}${BOLD}════════════════════════════════════════${NC}"
-    success "JOB COMPLETED! ⚡ ERC-8183 settlement verified"
-    echo -e "${GREEN}${BOLD}════════════════════════════════════════${NC}"
+    echo -e "${GREEN}${BOLD}══════════════════════════════════════════════════════${NC}"
+    success "FULLY AUTONOMOUS LOOP COMPLETE! ⚡ ERC-8183 settlement"
+    echo -e "${GREEN}${BOLD}══════════════════════════════════════════════════════${NC}"
     echo ""
     info "  AgenticCommerce:          $ACP_ADDR"
+    info "  AgenticCommerceWorker:    $ACW_ADDR  (autonomous provider)"
     info "  AgenticCommerceEvaluator: $ACE_ADDR"
     info "  Job ID:                   $JOB_ID"
-    info "  Provider paid:            $BUDGET tUSDC (raw)"
+    info "  Worker paid:              $BUDGET tUSDC (raw)"
     info "  ERC-8004 feedback count:  $REP_COUNT"
-    info "  Service ID:               $SERVICE_ID"
+    [ -n "$RESULT_URI" ] && info "  Result URI:               $RESULT_URI"
+    info "  Worker  logs: $WAVS_URL/dev/logs/$WORKER_SERVICE_ID"
+    info "  Evaluator logs: $WAVS_URL/dev/logs/$EVALUATOR_SERVICE_ID"
     ;;
   4)
-    warn "Job REJECTED (WAVS computed hash didn't match deliverable)"
-    warn "This is correct behaviour — client refunded, provider not paid"
+    warn "Job REJECTED — WAVS computed hash didn't match deliverable"
+    warn "Worker logs: $WAVS_URL/dev/logs/$WORKER_SERVICE_ID"
+    warn "Evaluator logs: $WAVS_URL/dev/logs/$EVALUATOR_SERVICE_ID"
     ;;
   2)
-    warn "Job still in Submitted state — WAVS may still be processing"
-    warn "Try: cast call $ACP_ADDR 'getJob(uint256)' $JOB_ID --rpc-url $RPC_URL"
+    warn "Job still Submitted — evaluator may still be processing (try longer WAIT_SECS)"
+    warn "Evaluator logs: $WAVS_URL/dev/logs/$EVALUATOR_SERVICE_ID"
+    ;;
+  1)
+    warn "Job still Funded — worker may still be processing (try longer WAIT_SECS)"
+    warn "Worker logs: $WAVS_URL/dev/logs/$WORKER_SERVICE_ID"
     ;;
   *)
     warn "Unexpected job status: $STATUS"
@@ -383,9 +500,9 @@ case "$STATUS" in
 esac
 
 echo ""
-echo "To inspect the job:"
-echo "  cast call $ACP_ADDR 'getJob(uint256)' $JOB_ID --rpc-url $RPC_URL"
+echo "Inspect job:"
+echo "  cast call $ACP_ADDR 'getJob(uint256)((address,address,address,address,string,string,uint256,uint64,uint8))' $JOB_ID --rpc-url $RPC_URL"
 echo ""
-echo "To check ERC-8004 reputation:"
+echo "ERC-8004 reputation:"
 echo "  cast call $REPUTATION_REGISTRY 'getSummary(uint256,address[],string,string)' $AGENT_ID '[]' '' '' --rpc-url $RPC_URL"
 echo ""

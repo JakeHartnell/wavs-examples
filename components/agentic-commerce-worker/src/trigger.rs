@@ -19,10 +19,11 @@ sol! {
     function getJobDescription(uint256 jobId) external view returns (string memory description);
 
     /// Worker result payload — decoded by AgenticCommerceWorker.sol
+    /// Fixed-size only: avoids ABI edge cases with dynamic types across WASM/EVM.
+    /// resultUri is stored separately (paste.rs) and logged but not passed on-chain.
     struct WorkerResult {
         uint256 jobId;
-        bytes32 deliverable;  // keccak256(llm_output)
-        string  resultUri;    // where to fetch the output (paste.rs URL)
+        bytes32 deliverable;  // keccak256(work_output)
     }
 }
 
@@ -79,11 +80,12 @@ pub fn decode_trigger_event(trigger_data: TriggerData) -> Result<JobFundedEvent>
 }
 
 /// Encode the worker result for AgenticCommerceWorker.handleSignedEnvelope.
-pub fn encode_worker_result(job_id: U256, deliverable: [u8; 32], result_uri: String) -> WasmResponse {
+/// Fixed-size payload: (uint256 jobId, bytes32 deliverable).
+/// resultUri is returned separately for logging but not ABI-encoded.
+pub fn encode_worker_result(job_id: U256, deliverable: [u8; 32], _result_uri: String) -> WasmResponse {
     let payload = WorkerResult {
         jobId:       job_id,
         deliverable: FixedBytes::<32>::from(deliverable),
-        resultUri:   result_uri,
     }
     .abi_encode();
 

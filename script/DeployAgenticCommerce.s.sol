@@ -7,6 +7,7 @@ import {IWavsServiceManager} from "@wavs/src/eigenlayer/ecdsa/interfaces/IWavsSe
 import {MockERC20} from "contracts/agentic-commerce/MockERC20.sol";
 import {AgenticCommerce} from "contracts/agentic-commerce/AgenticCommerce.sol";
 import {AgenticCommerceEvaluator} from "contracts/agentic-commerce/AgenticCommerceEvaluator.sol";
+import {AgenticCommerceWorker} from "contracts/agentic-commerce/AgenticCommerceWorker.sol";
 import {ReputationHook} from "contracts/agentic-commerce/ReputationHook.sol";
 import {IAgenticCommerce} from "interfaces/agentic-commerce/IAgenticCommerce.sol";
 
@@ -33,7 +34,11 @@ import {IReputationRegistry} from "contracts/agentic-commerce/ReputationHook.sol
 contract DeployAgenticCommerce is Script {
     function run() external {
         address deployer = msg.sender;
+        // Optional: separate SMs for worker and evaluator.
+        // If not set, both default to SERVICE_MANAGER_ADDR.
         address serviceManager = vm.envAddress("SERVICE_MANAGER_ADDR");
+        address workerSM   = vm.envOr("WORKER_SM_ADDR",   serviceManager);
+        address evaluatorSM = vm.envOr("EVALUATOR_SM_ADDR", serviceManager);
         address provider = vm.envAddress("PROVIDER_ADDR");
 
         vm.startBroadcast();
@@ -62,10 +67,19 @@ contract DeployAgenticCommerce is Script {
 
         // ── 5. AgenticCommerceEvaluator (WAVS submit handler) ────────────
         AgenticCommerceEvaluator ace = new AgenticCommerceEvaluator(
-            IWavsServiceManager(serviceManager),
+            IWavsServiceManager(evaluatorSM),
             IAgenticCommerce(address(acp))
         );
         console.log("ACE_ADDR=%s", address(ace));
+        console.log("EVALUATOR_SM_ADDR=%s", evaluatorSM);
+
+        // ── 5b. AgenticCommerceWorker (WAVS worker — autonomous provider) ─
+        AgenticCommerceWorker acw = new AgenticCommerceWorker(
+            IWavsServiceManager(workerSM),
+            IAgenticCommerce(address(acp))
+        );
+        console.log("ACW_ADDR=%s", address(acw));
+        console.log("WORKER_SM_ADDR=%s", workerSM);
 
         // ── 6. ReputationHook ─────────────────────────────────────────────
         ReputationHook hook = new ReputationHook(
