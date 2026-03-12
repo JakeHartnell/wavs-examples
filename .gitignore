@@ -22,3 +22,5 @@ infra/*
 # Tools
 **/.claude/settings.local.json
 .task/remote/
+components/python-evm-price-oracle/__pycache__/
+components/python-evm-price-oracle/wavs_guest/
