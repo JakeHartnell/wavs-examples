@@ -1022,6 +1022,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "chain-caller"
+version = "1.0.0"
+dependencies = [
+ "alloy-sol-macro",
+ "alloy-sol-types",
+ "anyhow",
+ "serde_json",
+ "wavs-wasi-utils",
+ "wit-bindgen 0.46.0",
+]
+
+[[package]]
+name = "chain-responder"
+version = "1.0.0"
+dependencies = [
+ "alloy-sol-macro",
+ "alloy-sol-types",
+ "anyhow",
+ "serde_json",
+ "wavs-wasi-utils",
+ "wit-bindgen 0.46.0",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
