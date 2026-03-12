@@ -51,6 +51,36 @@ RUN foundryup
 # Install Task runner
 USER root
 RUN sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+# Install Go + TinyGo + wit-bindgen-go for multi-language WASM components
+#
+# Go:           standard Go compiler (needed for go.bytecodealliance.org/cm)
+# TinyGo:       compiles Go → WASM component via wasip2 target
+#               flags: -target=wasip2 --wit-package <pkg.wasm> --wit-world <world>
+# wit-bindgen-go: regenerates Go bindings from WIT files after WIT changes
+#                 run: wit-bindgen-go generate --world <world> --out ./gen ./wit
+
+ARG GO_VERSION="1.23.8"
+ARG TINYGO_VERSION="0.40.1"
+
+RUN ARCH=$(dpkg --print-architecture) && \
+    echo "Installing Go ${GO_VERSION}..." && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
+      -o /tmp/go.tar.gz && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz && \
+    echo "Installing TinyGo ${TINYGO_VERSION}..." && \
+    curl -fsSL "https://github.com/tinygo-org/tinygo/releases/download/v${TINYGO_VERSION}/tinygo${TINYGO_VERSION}.linux-${ARCH}.tar.gz" \
+      -o /tmp/tinygo.tar.gz && \
+    tar -C /usr/local -xzf /tmp/tinygo.tar.gz && \
+    rm /tmp/tinygo.tar.gz
+
+ENV GOPATH="/home/node/go"
+ENV PATH="/usr/local/go/bin:/usr/local/tinygo/bin:/home/node/go/bin:${PATH}"
+
+USER node
+RUN go install go.bytecodealliance.org/cmd/wit-bindgen-go@latest
+
 USER node
 
 # Verify toolchain
@@ -58,4 +88,7 @@ RUN cargo --version && \
     cargo component --version && \
     wasm-tools --version && \
     forge --version && \
-    task --version
+    task --version && \
+    go version && \
+    tinygo version && \
+    wit-bindgen-go --version
