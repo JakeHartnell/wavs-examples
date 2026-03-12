@@ -28,6 +28,10 @@ from wit_world.imports.wasi_http_types import (
 )
 from wit_world.imports.streams import StreamError_Closed
 
+# componentize-py raises componentize_py_types.Err (a BaseException subclass)
+# when WASI functions signal an error. We use this to catch end-of-stream.
+_CpyErr = type(Err(None))
+
 READ_SIZE = 16 * 1024
 
 
@@ -78,15 +82,18 @@ def _http_get(url: str, extra_headers: dict) -> bytes:
     req.set_path_with_query(path_query)
 
     # Send request — returns a FutureIncomingResponse
+    print(f"[http] sending GET {url}")
     future = outgoing_handler.handle(req, None)
 
     # Block until the response is ready
+    # Always poll via the subscribe pollable — never spin without yielding
+    polls = 0
     while True:
         result = future.get()
         if result is None:
-            # Not ready yet — poll on the subscribe pollable
             pollable = future.subscribe()
             wasi_poll.poll([pollable])
+            polls += 1
             continue
 
         # result: Ok(Ok(IncomingResponse)) | Ok(Err(ErrorCode)) | Err(None)
@@ -99,26 +106,37 @@ def _http_get(url: str, extra_headers: dict) -> bytes:
         break
 
     status = response.status()
+    print(f"[http] response status={status} polls={polls}")
     if status < 200 or status >= 300:
         raise RuntimeError(f"HTTP {status} from {url}")
 
-    # Read the response body
+    # Read the response body.
+    # WASI InputStream.read() returns empty bytes when no data is immediately
+    # available (non-blocking). We MUST subscribe/poll on the stream's pollable
+    # before each read to avoid spinning on empty reads until the engine kills us.
     body = response.consume()
     stream = body.stream()
 
     data = bytearray()
     while True:
+        # Wait until data is available (or stream is closed)
+        stream_poll = stream.subscribe()
+        wasi_poll.poll([stream_poll])
         try:
             chunk = stream.read(READ_SIZE)
-            data.extend(chunk)
-        except StreamError_Closed:
-            break
-        except Exception as e:
-            # WASI streams raise on end-of-stream — check for closed
-            err_str = str(e)
-            if "Closed" in err_str or "closed" in err_str:
+            if chunk:
+                data.extend(chunk)
+            # empty chunk after poll = transient, loop again
+        except _CpyErr as e:
+            # componentize-py raises Err(StreamError_Closed()) at EOF
+            if isinstance(e.value, StreamError_Closed):
                 break
-            raise RuntimeError(f"Stream read error: {e}")
+            raise RuntimeError(f"Stream read error: {e.value}")
 
-    IncomingBody.finish(body)
+    # Drop the InputStream explicitly.
+    # We do NOT call IncomingBody.finish() — it requires all child resources
+    # (InputStream) to be fully released first, but CPython's refcount doesn't
+    # synchronously drop WASM resources, causing "resource has children" errors.
+    del stream
+    print(f"[http] body read complete: {len(data)} bytes")
     return bytes(data)

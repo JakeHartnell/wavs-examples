@@ -41,27 +41,38 @@ def decode_trigger(data: events.TriggerData) -> Tuple[int, bytes, str]:
 def encode_output(trigger_id: int, data: bytes) -> bytes:
     """ABI-encode DataWithId { uint64 triggerId; bytes data } for on-chain submission.
 
+    Matches Rust alloy's .abi_encode() for a dynamic struct — includes the outer
+    32-byte tuple offset prefix that abi.decode(payload, (DataWithId)) requires.
+
     Layout:
-      [0:32]   triggerId  (uint64, right-aligned in 32 bytes)
-      [32:64]  offset to data bytes (= 0x40 = 64)
-      [64:96]  length of data bytes
-      [96..]   data bytes (zero-padded to 32-byte boundary)
+      [0:32]    outer offset = 0x20 (= 32, pointing to struct start)
+      [32:64]   triggerId  (uint64, right-aligned in 32 bytes)
+      [64:96]   offset to data bytes from struct start (= 0x40 = 64)
+      [96:128]  length of data bytes
+      [128..]   data bytes (zero-padded to 32-byte boundary)
+
+    Note: abi.decode(payload, (DataWithId)) expects this format —
+    it decodes a 1-tuple (DataWithId,) which adds an outer offset word.
+    Without this prefix, the decode silently produces wrong values and reverts.
     """
     data_len = len(data)
-    pad_len = (32 - data_len % 32) % 32
-    buf = bytearray(96 + data_len + pad_len)
+    pad_len = (32 - data_len % 32) % 32 if data_len % 32 != 0 else 0
+    buf = bytearray(128 + data_len + pad_len)
 
-    # triggerId — uint64 right-aligned in 32 bytes
-    struct.pack_into(">Q", buf, 24, trigger_id)
+    # outer offset = 32 (0x20) — required by abi.decode for dynamic structs
+    struct.pack_into(">Q", buf, 24, 32)
 
-    # offset to data = 64 (0x40)
-    struct.pack_into(">Q", buf, 56, 64)
+    # triggerId — uint64 right-aligned in second 32-byte word
+    struct.pack_into(">Q", buf, 56, trigger_id)
+
+    # offset to data from struct start = 64 (0x40)
+    struct.pack_into(">Q", buf, 88, 64)
 
     # data length
-    struct.pack_into(">Q", buf, 88, data_len)
+    struct.pack_into(">Q", buf, 120, data_len)
 
     # data bytes
-    buf[96:96 + data_len] = data
+    buf[128:128 + data_len] = data
 
     return bytes(buf)
 

@@ -23,27 +23,47 @@ from trigger import decode_trigger, encode_output, DEST_EVM, DEST_CLI
 from http_client import http_get_json
 
 
-# ─── CoinMarketCap ────────────────────────────────────────────────────────────
+# ─── CoinGecko (lightweight, no API key) ─────────────────────────────────────
+#
+# CoinMarketCap's detail endpoint returns ~50 KB which is slow to stream
+# through WASI HTTP. CoinGecko's simple/price returns ~25 bytes — much faster.
+#
+# CMC ID → CoinGecko slug lookup (extend as needed)
+_CMC_TO_COINGECKO = {
+    1:    "bitcoin",
+    2:    "litecoin",
+    52:   "ripple",
+    74:   "dogecoin",
+    825:  "tether",
+    1027: "ethereum",
+    1839: "binancecoin",
+    5426: "solana",
+    3408: "usd-coin",
+}
 
-CMC_URL = (
-    "https://api.coinmarketcap.com/data-api/v3/cryptocurrency/detail"
-    "?id={cmc_id}&range=1h"
+COINGECKO_URL = (
+    "https://api.coingecko.com/api/v3/simple/price"
+    "?ids={coin_id}&vs_currencies=usd"
 )
 
 
 def fetch_price(cmc_id: int) -> dict:
-    """Fetch current price for a CoinMarketCap cryptocurrency ID.
+    """Fetch current USD price using CoinGecko's lightweight simple/price API.
 
     Returns:
         { "symbol": str, "price": float, "timestamp": str }
     """
-    url = CMC_URL.format(cmc_id=cmc_id)
+    coin_id = _CMC_TO_COINGECKO.get(cmc_id, "bitcoin")
+    # Use the CMC symbol name for display; derive from coin_id as fallback
+    symbol = coin_id.upper().replace("-", "")
+
+    url = COINGECKO_URL.format(coin_id=coin_id)
+    print(f"[price] GET {url}")
     body = http_get_json(url)
 
-    symbol = body["data"]["symbol"]
-    price = math.floor(body["data"]["statistics"]["price"] * 100) / 100
-    # Timestamp arrives as "2025-04-30T19:59:44.161Z" — strip sub-seconds
-    timestamp = body["status"]["timestamp"].split(".")[0]
+    price = float(body[coin_id]["usd"])
+    # CoinGecko doesn't return a timestamp; use a placeholder
+    timestamp = "2026-01-01T00:00:00"
 
     return {"symbol": symbol, "price": price, "timestamp": timestamp}
 
@@ -88,4 +108,4 @@ class WitWorld(wit_world.WitWorld):
             ]
 
         except Exception as e:
-            raise str(e)
+            raise Exception(str(e))

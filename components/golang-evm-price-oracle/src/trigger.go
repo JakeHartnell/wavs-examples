@@ -121,28 +121,39 @@ func decodeTriggerInfo(log chainTypes.EvmEventLog) triggerInfo {
 
 // encodeOutput ABI-encodes the DataWithId struct for on-chain submission.
 //
-// Matches ITypes.sol: struct DataWithId { uint64 triggerId; bytes data; }
-// ABI layout: triggerId(32B) | offset(32B) | length(32B) | data(padded)
+// Matches Rust alloy's .abi_encode() for a dynamic struct — includes the outer
+// 32-byte tuple offset prefix that abi.decode(payload, (DataWithId)) requires.
+//
+// ABI layout:
+//   [0:32]   outer offset = 0x20 (32) — required by abi.decode for dynamic structs
+//   [32:64]  triggerId (uint64, right-aligned)
+//   [64:96]  offset to data from struct start = 0x40 (64)
+//   [96:128] data length
+//   [128..]  data bytes (padded to 32-byte boundary)
+//
+// Note: without the outer 0x20 prefix, abi.decode(payload, (DataWithId)) silently
+// misreads triggerId as an offset and the transaction reverts with empty data "0x".
 func encodeOutput(triggerID uint64, data []byte) []byte {
-	// Encode DataWithId: (uint64 triggerId, bytes data)
-	// ABI: [0:32] triggerId | [32:64] offset=0x40 | [64:96] dataLen | [96..] data padded
 	dataLen := len(data)
 	padLen := (32 - dataLen%32) % 32
-	total := 96 + dataLen + padLen
+	total := 128 + dataLen + padLen
 
 	buf := make([]byte, total)
 
-	// triggerId — uint64 right-aligned in 32 bytes
-	binary.BigEndian.PutUint64(buf[24:32], triggerID)
+	// outer offset = 32 (0x20) — 1-tuple wrapper required by abi.decode
+	binary.BigEndian.PutUint64(buf[24:32], 32)
 
-	// offset to data — 0x40 (64)
-	binary.BigEndian.PutUint64(buf[56:64], 64)
+	// triggerId — uint64 right-aligned in second 32-byte word
+	binary.BigEndian.PutUint64(buf[56:64], triggerID)
+
+	// offset to data from struct start = 64 (0x40)
+	binary.BigEndian.PutUint64(buf[88:96], 64)
 
 	// data length
-	binary.BigEndian.PutUint64(buf[88:96], uint64(dataLen))
+	binary.BigEndian.PutUint64(buf[120:128], uint64(dataLen))
 
 	// data bytes
-	copy(buf[96:], data)
+	copy(buf[128:], data)
 
 	return buf
 }
