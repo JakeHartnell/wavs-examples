@@ -3,9 +3,9 @@ pragma solidity 0.8.27;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {SimpleTrigger} from "contracts/WavsTrigger.sol";
-import {LLMSubmit} from "contracts/LLMSubmit.sol";
-import {SimpleServiceManager} from "contracts/SimpleServiceManager.sol";
+import {SimpleTrigger} from "../src/contracts/WavsTrigger.sol";
+import {LLMSubmit} from "../src/contracts/LLMSubmit.sol";
+import {SimpleServiceManager} from "../src/contracts/SimpleServiceManager.sol";
 
 /**
  * @title DeployLLMOracle

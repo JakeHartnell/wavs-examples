@@ -27,11 +27,9 @@ impl Guest for Component {
 
         let response = match dest {
             Destination::Ethereum => encode_trigger_output(trigger_id, &output_bytes),
-            Destination::CliOutput => WasmResponse {
-                payload: output_bytes.into(),
-                ordering: None,
-                event_id_salt: None,
-            },
+            Destination::CliOutput => {
+                WasmResponse { payload: output_bytes.into(), ordering: None, event_id_salt: None }
+            }
         };
 
         Ok(vec![response])

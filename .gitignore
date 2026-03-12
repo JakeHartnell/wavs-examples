@@ -4,6 +4,7 @@ out/
 cache/
 broadcast/
 node_modules/
+.DS_Store
 
 # WAVS
 .env
