@@ -110,16 +110,13 @@ impl Guest for Component {
         let (trigger_id, req, dest) =
             decode_trigger_event(action.data).map_err(|e| e.to_string())?;
 
-        // Trigger data is raw UTF-8 (bytes(_data) in Solidity).
-        // 0x prefix = hex-encoded ABI string (local wasi-exec testing path).
-        let location = match String::from_utf8(req.clone()) {
-            Ok(s) if s.starts_with("0x") => {
-                let hex_data = hex::decode(&s[2..])
-                    .map_err(|e| format!("hex decode: {}", e))?;
-                <String as SolValue>::abi_decode(&hex_data).unwrap_or(s)
-            }
-            Ok(s) => s,
-            Err(e) => return Err(format!("UTF-8 decode: {}", e)),
+        // Trigger data is either:
+        // - ABI-encoded string bytes (local testing: wavs-cli binary-decodes the --input hex)
+        // - Raw UTF-8 bytes of the location string (on-chain: Solidity `bytes(_data)`)
+        let location = if let Ok(s) = <String as SolValue>::abi_decode(&req) {
+            s
+        } else {
+            String::from_utf8(req.clone()).map_err(|e| format!("UTF-8 decode: {}", e))?
         };
 
         let data = get_weather(&location)
