@@ -28,7 +28,8 @@ contract LLMSubmit is ITypes, IWavsServiceHandler {
 
     function handleSignedEnvelope(Envelope calldata envelope, SignatureData calldata signatureData) external {
         _serviceManager.validate(envelope, signatureData);
-        LLMResult memory result = abi.decode(envelope.payload, (LLMResult));
+        DataWithId memory dataWithId = abi.decode(envelope.payload, (DataWithId));
+        LLMResult memory result = abi.decode(dataWithId.data, (LLMResult));
         TriggerId tid = TriggerId.wrap(result.triggerId);
         responses[tid] = result.response;
         responseHashes[tid] = result.responseHash;
