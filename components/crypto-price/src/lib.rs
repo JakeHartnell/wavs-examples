@@ -4,9 +4,9 @@
 //!   - JSON tool args:  {"symbol": "BTC"}   (from llm-agent)
 //!   - Plain string:    "BTC"               (direct trigger)
 //!
-//! Fetches current price from CoinGecko (no API key required).
+//! Fetches current price from CoinMarketCap data API (no API key required).
 //! Writes result to KV store (bucket="tool", key="result") for tool-protocol compatibility.
-//! Returns JSON: {"symbol":"BTC","price_usd":69885.0,"change_24h_pct":-1.2,"timestamp":"..."}
+//! Returns JSON: {"symbol":"BTC","price_usd":83920.0,"timestamp":"2026-03-13T11:54:00"}
 
 #[rustfmt::skip]
 pub mod bindings;
@@ -26,22 +26,32 @@ export!(Component with_types_in bindings);
 #[derive(Debug, Serialize, Deserialize)]
 struct PriceData {
     symbol: String,
-    coingecko_id: String,
     price_usd: f64,
-    change_24h_pct: f64,
-    market_cap_usd: f64,
-    timestamp_unix: u64,
+    timestamp: String,
 }
 
-// ── CoinGecko API response type ───────────────────────────────────────────────
+// ── CoinMarketCap internal API response types ─────────────────────────────────
 
 #[derive(Deserialize)]
-struct CoinGeckoMarket {
+struct CmcRoot {
+    data: CmcData,
+    status: CmcStatus,
+}
+
+#[derive(Deserialize)]
+struct CmcData {
     symbol: String,
-    current_price: f64,
-    price_change_percentage_24h: Option<f64>,
-    market_cap: Option<f64>,
-    last_updated: String,
+    statistics: CmcStatistics,
+}
+
+#[derive(Deserialize)]
+struct CmcStatistics {
+    price: f64,
+}
+
+#[derive(Deserialize)]
+struct CmcStatus {
+    timestamp: String,
 }
 
 // ── Component impl ────────────────────────────────────────────────────────────
@@ -57,15 +67,14 @@ impl Guest for Component {
 
         host::log(LogLevel::Info, &format!("crypto-price: fetching price for {}", symbol));
 
-        let coingecko_id = symbol_to_coingecko_id(&symbol)
-            .ok_or_else(|| format!("unknown symbol: {} (supported: BTC, ETH, SOL, AVAX, MATIC, LINK, UNI, DOGE)", symbol))?;
+        let cmc_id = symbol_to_cmc_id(&symbol)
+            .ok_or_else(|| format!("unknown symbol: {} (supported: BTC, ETH, SOL, AVAX, MATIC, LINK, UNI, DOGE, ADA, DOT)", symbol))?;
 
-        let price_data = fetch_price(coingecko_id, &symbol)?;
+        let price_data = fetch_price(cmc_id, &symbol)?;
 
         host::log(
             LogLevel::Info,
-            &format!("crypto-price: {} = ${:.2} ({:+.2}% 24h)",
-                price_data.symbol, price_data.price_usd, price_data.change_24h_pct),
+            &format!("crypto-price: {} = ${:.2}", price_data.symbol, price_data.price_usd),
         );
 
         let res = serde_json::to_vec(&price_data)
@@ -105,80 +114,57 @@ fn parse_symbol(data: &[u8]) -> Result<String, String> {
         .map_err(|e| format!("UTF-8 decode: {e}"))
 }
 
-// ── Symbol → CoinGecko ID mapping ────────────────────────────────────────────
+// ── Symbol → CoinMarketCap numeric ID mapping ────────────────────────────────
 
-fn symbol_to_coingecko_id(symbol: &str) -> Option<&'static str> {
+fn symbol_to_cmc_id(symbol: &str) -> Option<u64> {
     match symbol {
-        "BTC" => Some("bitcoin"),
-        "ETH" => Some("ethereum"),
-        "SOL" => Some("solana"),
-        "AVAX" => Some("avalanche-2"),
-        "MATIC" | "POL" => Some("matic-network"),
-        "LINK" => Some("chainlink"),
-        "UNI" => Some("uniswap"),
-        "DOGE" => Some("dogecoin"),
-        "ADA" => Some("cardano"),
-        "DOT" => Some("polkadot"),
-        "ATOM" => Some("cosmos"),
-        "NEAR" => Some("near"),
-        "ARB" => Some("arbitrum"),
-        "OP" => Some("optimism"),
-        "INJ" => Some("injective-protocol"),
-        _ => None,
+        "BTC"        => Some(1),
+        "ETH"        => Some(1027),
+        "SOL"        => Some(5426),
+        "BNB"        => Some(1839),
+        "XRP"        => Some(52),
+        "ADA"        => Some(2010),
+        "AVAX"       => Some(5805),
+        "DOGE"       => Some(74),
+        "DOT"        => Some(6636),
+        "MATIC"|"POL"=> Some(3890),
+        "LINK"       => Some(1975),
+        "UNI"        => Some(7083),
+        "ATOM"       => Some(3794),
+        "NEAR"       => Some(6535),
+        "ARB"        => Some(11841),
+        "OP"         => Some(11840),
+        "INJ"        => Some(7226),
+        _            => None,
     }
 }
 
-// ── CoinGecko API call ────────────────────────────────────────────────────────
+// ── CoinMarketCap data API call ───────────────────────────────────────────────
+// Uses the same undocumented data API as evm-price-oracle.
+// Requires User-Agent + random Cookie to avoid 403.
 
-fn fetch_price(coingecko_id: &'static str, symbol: &str) -> Result<PriceData, String> {
+fn fetch_price(cmc_id: u64, symbol: &str) -> Result<PriceData, String> {
     let url = format!(
-        "https://api.coingecko.com/api/v3/coins/markets\
-         ?vs_currency=usd\
-         &ids={}\
-         &order=market_cap_desc\
-         &per_page=1\
-         &page=1\
-         &sparkline=false\
-         &price_change_percentage=24h",
-        coingecko_id
+        "https://api.coinmarketcap.com/data-api/v3/cryptocurrency/detail?id={}&range=1h",
+        cmc_id
     );
 
-    let markets: Vec<CoinGeckoMarket> = http::get_json(&url)?;
-    let m = markets
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("no data returned for {}", coingecko_id))?;
+    // Spoof a browser request — same technique as evm-price-oracle
+    let headers = vec![
+        ("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36".to_string()),
+        ("Accept", "application/json".to_string()),
+        ("Cookie", format!("myrandom_cookie={}", cmc_id * 1000 + 42)),
+    ];
 
-    // CoinGecko last_updated is ISO 8601, e.g. "2024-01-01T12:00:00.000Z"
-    // We'll keep it as-is for readability
-    let timestamp_unix = iso8601_to_unix(&m.last_updated).unwrap_or(0);
+    let resp: CmcRoot = http::get_json_with_headers(&url, &headers)?;
+    let price = (resp.data.statistics.price * 100.0).round() / 100.0;
+    let timestamp = resp.status.timestamp.split('.').next().unwrap_or("").to_string();
 
     Ok(PriceData {
-        symbol: symbol.to_string(),
-        coingecko_id: coingecko_id.to_string(),
-        price_usd: (m.current_price * 100.0).round() / 100.0,
-        change_24h_pct: (m.price_change_percentage_24h.unwrap_or(0.0) * 100.0).round() / 100.0,
-        market_cap_usd: m.market_cap.unwrap_or(0.0),
-        timestamp_unix,
+        symbol: resp.data.symbol,
+        price_usd: price,
+        timestamp,
     })
-}
-
-/// Minimal ISO 8601 UTC → Unix timestamp (no external deps, good enough for logging).
-fn iso8601_to_unix(s: &str) -> Option<u64> {
-    // Expected: "2024-01-15T12:34:56.000Z"
-    let s = s.trim_end_matches('Z').trim_end_matches(|c: char| c == '.' || c.is_ascii_digit());
-    let parts: Vec<&str> = s.splitn(2, 'T').collect();
-    if parts.len() != 2 { return None; }
-    let date_parts: Vec<u32> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
-    let time_parts: Vec<u32> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
-    if date_parts.len() < 3 || time_parts.len() < 3 { return None; }
-    // Approximate days since epoch (ignore leap seconds etc.)
-    let y = date_parts[0] as u64;
-    let m = date_parts[1] as u64;
-    let d = date_parts[2] as u64;
-    let days = (y - 1970) * 365 + (y - 1969) / 4 + [0,31,59,90,120,151,181,212,243,273,304,334]
-        .get((m - 1) as usize).copied().unwrap_or(0) + d - 1;
-    Some(days * 86400 + time_parts[0] as u64 * 3600 + time_parts[1] as u64 * 60 + time_parts[2] as u64)
 }
 
 // ── HTTP helpers (raw WASI) ───────────────────────────────────────────────────
@@ -191,14 +177,28 @@ mod http {
     use crate::bindings::wasi::io::streams::StreamError;
 
     pub fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
-        let bytes = get(url)?;
+        let bytes = get_with_headers(url, &[])?;
         serde_json::from_slice(&bytes).map_err(|e| format!("JSON parse: {e}"))
     }
 
-    pub fn get(url: &str) -> Result<Vec<u8>, String> {
+    pub fn get_json_with_headers<T: serde::de::DeserializeOwned>(
+        url: &str,
+        headers: &[(&str, String)],
+    ) -> Result<T, String> {
+        let bytes = get_with_headers(url, headers)?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("JSON parse: {e}"))
+    }
+
+    pub fn get_with_headers(url: &str, extra_headers: &[(&str, String)]) -> Result<Vec<u8>, String> {
         let (scheme, authority, path_query) = parse_url(url)?;
 
         let headers = Fields::new();
+        for (name, value) in extra_headers {
+            headers.append(
+                &name.to_string(),
+                &value.as_bytes().to_vec(),
+            ).map_err(|e| format!("set header {}: {:?}", name, e))?;
+        }
         let req = OutgoingRequest::new(headers);
         req.set_method(&Method::Get).map_err(|_| "set method")?;
         req.set_scheme(Some(&scheme)).map_err(|_| "set scheme")?;

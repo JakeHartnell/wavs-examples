@@ -38,8 +38,10 @@ LLM_MODEL="${LLM_MODEL:-llama3.2}"
 LLM_API_KEY="${LLM_API_KEY:-}"
 PROMPT="${PROMPT:-What is the current weather in London and the current price of BTC? Answer in two sentences.}"
 
-# WAVS URL that the WASM component uses to call other services (runs inside Docker)
-WAVS_INTERNAL_URL="${WAVS_INTERNAL_URL:-http://host.docker.internal:8041}"
+# WAVS URL that the WASM component uses to call other services.
+# Component runs inside the WAVS Docker container, so localhost reaches the WAVS REST API directly.
+# (host.docker.internal is Mac/Windows Docker Desktop only — not available on Linux)
+WAVS_INTERNAL_URL="${WAVS_INTERNAL_URL:-http://localhost:8041}"
 
 GREEN="\033[0;32m"; BLUE="\033[0;34m"; YELLOW="\033[0;33m"; RED="\033[0;31m"; NC="\033[0m"
 info()    { echo -e "${BLUE}▶ $*${NC}"; }
@@ -258,7 +260,8 @@ PYEOF
   # Set URI on-chain
   local uri="http://127.0.0.1:8041/dev/services/$hash"
   cast send "$sm" "setServiceURI(string)" "$uri" \
-    --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
+    --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet \
+    >/dev/null 2>&1
 
   # Register with WAVS node
   curl -s -X POST "$WAVS_URL/services" \
@@ -266,7 +269,7 @@ PYEOF
     -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$sm\"}}}" \
     > /dev/null
 
-  # Poll until the service appears in the list (by name) — don't rely on [-1] timing
+  # Poll until this specific service_manager address appears — avoids stale IDs from prior deploys
   local svc_id=""
   local attempts=0
   while [ -z "$svc_id" ] && [ $attempts -lt 20 ]; do
@@ -277,8 +280,10 @@ import json, sys
 d = json.load(sys.stdin)
 services = d.get('services', [])
 service_ids = d.get('service_ids', [])
+sm_lower = '$sm'.lower()
 for i, svc in enumerate(services):
-    if svc.get('name') == '$name' and i < len(service_ids):
+    mgr = svc.get('manager', {}).get('evm', {}).get('address', '').lower()
+    if mgr == sm_lower and i < len(service_ids):
         print(service_ids[i])
         break
 " 2>/dev/null) || true
@@ -294,7 +299,7 @@ print('IDs:', d.get('service_ids',[]))
     die "Failed to get service_id for $name"
   fi
 
-  info "  $name registered with ID: $svc_id (after ${attempts}s)"
+  info "  $name registered with ID: $svc_id (after ${attempts}s)" >&2
   echo "$svc_id"
 }
 
@@ -305,7 +310,8 @@ info "Registering weather-oracle..."
 echo '{}' > "$TMPDIR_DEPLOY/weather-config.json"
 WEATHER_SVC_ID=$(register_service \
   weather-oracle "$WEATHER_SM" "$WEATHER_TRIGGER" \
-  "$WEATHER_DIGEST" "$WEATHER_SUBMIT" "$TMPDIR_DEPLOY/weather-config.json")
+  "$WEATHER_DIGEST" "$WEATHER_SUBMIT" "$TMPDIR_DEPLOY/weather-config.json" \
+  | grep -E '^[0-9a-f]{64}$' | tail -1)
 success "weather-oracle service ID: $WEATHER_SVC_ID"
 
 # =============================================================================
@@ -315,7 +321,8 @@ info "Registering crypto-price..."
 echo '{}' > "$TMPDIR_DEPLOY/crypto-config.json"
 CRYPTO_SVC_ID=$(register_service \
   crypto-price "$CRYPTO_SM" "$CRYPTO_TRIGGER" \
-  "$CRYPTO_DIGEST" "$CRYPTO_SUBMIT" "$TMPDIR_DEPLOY/crypto-config.json")
+  "$CRYPTO_DIGEST" "$CRYPTO_SUBMIT" "$TMPDIR_DEPLOY/crypto-config.json" \
+  | grep -E '^[0-9a-f]{64}$' | tail -1)
 success "crypto-price service ID: $CRYPTO_SVC_ID"
 
 # =============================================================================
@@ -363,7 +370,8 @@ echo ""
 
 AGENT_SVC_ID=$(register_service \
   llm-agent "$AGENT_SM" "$AGENT_TRIGGER" \
-  "$AGENT_DIGEST" "$AGENT_SUBMIT" "$TMPDIR_DEPLOY/agent-config.json")
+  "$AGENT_DIGEST" "$AGENT_SUBMIT" "$TMPDIR_DEPLOY/agent-config.json" \
+  | grep -E '^[0-9a-f]{64}$' | tail -1)
 success "llm-agent service ID: $AGENT_SVC_ID"
 
 # =============================================================================

@@ -118,7 +118,7 @@ impl Guest for Component {
             .and_then(|s| s.parse().ok())
             .unwrap_or(5);
         let wavs_url = host::config_var("wavs_node_url")
-            .unwrap_or_else(|| "http://host.docker.internal:8041".to_string());
+            .unwrap_or_else(|| "http://localhost:8041".to_string());
 
         host::log(LogLevel::Info, &format!("llm-agent: prompt = {:?}", &prompt));
 
