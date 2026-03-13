@@ -3,6 +3,7 @@ pub mod bindings;
 pub mod solidity;
 mod trigger;
 
+use crate::bindings::wasi::keyvalue::store;
 use crate::bindings::{export, Guest, TriggerAction, WasmResponse};
 use alloy_sol_types::SolValue;
 use anyhow::Result;
@@ -82,7 +83,8 @@ mod http {
             }
         }
         drop(stream);
-        let _trailers = IncomingBody::finish(body);
+        // NOTE: do NOT call IncomingBody::finish() — resource has children panic
+        drop(body);
 
         Ok(bytes)
     }
@@ -110,10 +112,18 @@ impl Guest for Component {
         let (trigger_id, req, dest) =
             decode_trigger_event(action.data).map_err(|e| e.to_string())?;
 
-        // Trigger data is either:
-        // - ABI-encoded string bytes (local testing: wavs-cli binary-decodes the --input hex)
-        // - Raw UTF-8 bytes of the location string (on-chain: Solidity `bytes(_data)`)
-        let location = if let Ok(s) = <String as SolValue>::abi_decode(&req) {
+        // Trigger data accepts three formats (in priority order):
+        // 1. JSON tool args:    {"city": "London"}     (from llm-agent tool call)
+        // 2. ABI-encoded string (local testing via wavs-cli)
+        // 3. Raw UTF-8 bytes   "London"               (on-chain Solidity bytes)
+        let location = if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&req) {
+            // JSON input: extract "city" or "location" field
+            v.get("city")
+                .or_else(|| v.get("location"))
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| "JSON args missing 'city' field".to_string())?
+        } else if let Ok(s) = <String as SolValue>::abi_decode(&req) {
             s
         } else {
             String::from_utf8(req.clone()).map_err(|e| format!("UTF-8 decode: {}", e))?
@@ -123,6 +133,12 @@ impl Guest for Component {
             .map_err(|e| format!("weather[{}]: {}", location, e))?;
         let res = serde_json::to_vec(&data)
             .map_err(|e| format!("serialize: {}", e))?;
+
+        // Write to KV for tool-protocol compatibility (llm-agent reads this)
+        let bucket = store::open("tool")
+            .map_err(|e| format!("open kv bucket 'tool': {:?}", e))?;
+        bucket.set("result", &res)
+            .map_err(|e| format!("kv set 'result': {:?}", e))?;
 
         let output = match dest {
             Destination::Ethereum => vec![encode_trigger_output(trigger_id, &res)],

@@ -1179,6 +1179,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-price"
+version = "1.0.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-macro",
+ "alloy-sol-types",
+ "anyhow",
+ "serde",
+ "serde_json",
+ "wit-bindgen 0.46.0",
+]
+
+[[package]]
 name = "darling"
 version = "0.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2183,6 +2196,20 @@ name = "litemap"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
+
+[[package]]
+name = "llm-agent"
+version = "1.0.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-macro",
+ "alloy-sol-types",
+ "anyhow",
+ "hex",
+ "serde",
+ "serde_json",
+ "wit-bindgen 0.46.0",
+]
 
 [[package]]
 name = "llm-oracle"

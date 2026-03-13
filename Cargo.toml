@@ -21,6 +21,10 @@ members = [
     "components/weather-oracle",
     "components/llm-oracle",
 
+    # Agent tooling
+    "components/llm-agent",
+    "components/crypto-price",
+
     # Legacy / template components (kept for reference)
     "components/evm-price-oracle",
     "components/aggregator",
