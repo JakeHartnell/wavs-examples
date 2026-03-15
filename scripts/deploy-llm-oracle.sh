@@ -187,27 +187,28 @@ success "ServiceURI set: $SERVICE_URI"
 # 7. Register service with WAVS node
 # =============================================================================
 info "Registering service with WAVS node..."
-curl -sf -X POST "$WAVS_URL/services" \
+REG_RESP=$(curl -sf -X POST "$WAVS_URL/services" \
   -H "Content-Type: application/json" \
-  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$SM_ADDR\"}}}" \
-  > /dev/null
-success "Service registered"
-
-sleep 2  # Let node assign HD index
+  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$SM_ADDR\"}}}")
+success "Service registered"  # Let node assign HD index
 
 # =============================================================================
 # 8. Get service ID and signing key
 # =============================================================================
 info "Fetching service ID and signing key..."
 
-SERVICES_RESP=$(curl -sf "$WAVS_URL/services")
-SERVICE_ID=$(echo "$SERVICES_RESP" | python3 -c "
+# WAVS v1.1+ returns service_id directly from POST /services
+SERVICE_ID=$(echo "$REG_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null) || true
+if [ -z "$SERVICE_ID" ]; then
+  sleep 2  # fallback: poll for older WAVS
+  SERVICE_ID=$(curl -sf "$WAVS_URL/services" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 ids=d.get('service_ids',[])
 if not ids: raise SystemExit('No services registered')
 print(ids[-1])
 ")
+fi
 success "Service ID: $SERVICE_ID"
 
 SIGNER_RESP=$(curl -sf -X POST "$WAVS_URL/services/signer" \

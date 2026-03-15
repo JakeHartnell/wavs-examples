@@ -263,19 +263,22 @@ PYEOF
     --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet \
     >/dev/null 2>&1
 
-  # Register with WAVS node
-  curl -s -X POST "$WAVS_URL/services" \
+  # Register with WAVS node — POST /services now returns {"service_id": "..."} directly (WAVS v1.1+)
+  local reg_resp
+  reg_resp=$(curl -s -X POST "$WAVS_URL/services" \
     -H "Content-Type: application/json" \
-    -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$sm\"}}}" \
-    > /dev/null
+    -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$sm\"}}}")
 
-  # Poll until this specific service_manager address appears — avoids stale IDs from prior deploys
-  local svc_id=""
-  local attempts=0
-  while [ -z "$svc_id" ] && [ $attempts -lt 20 ]; do
-    sleep 1
-    attempts=$((attempts + 1))
-    svc_id=$(curl -s "$WAVS_URL/services" | python3 -c "
+  local svc_id
+  svc_id=$(echo "$reg_resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null) || true
+
+  # Fallback: poll GET /services if WAVS version predates service_id response
+  if [ -z "$svc_id" ]; then
+    local attempts=0
+    while [ -z "$svc_id" ] && [ $attempts -lt 20 ]; do
+      sleep 1
+      attempts=$((attempts + 1))
+      svc_id=$(curl -s "$WAVS_URL/services" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 services = d.get('services', [])
@@ -287,19 +290,23 @@ for i, svc in enumerate(services):
         print(service_ids[i])
         break
 " 2>/dev/null) || true
-  done
+    done
 
-  if [ -z "$svc_id" ]; then
-    echo "  Timed out waiting for service '$name' after ${attempts}s" >&2
-    curl -s "$WAVS_URL/services" | python3 -c "
+    if [ -z "$svc_id" ]; then
+      echo "  Timed out waiting for service '$name' after ${attempts}s" >&2
+      curl -s "$WAVS_URL/services" | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 print('Services:', [s.get('name') for s in d.get('services',[])])
 print('IDs:', d.get('service_ids',[]))
 " >&2
-    die "Failed to get service_id for $name"
+      die "Failed to get service_id for $name"
+    fi
+
+    info "  $name registered with ID: $svc_id (via poll, ${attempts}s)" >&2
+  else
+    info "  $name registered with ID: $svc_id (direct)" >&2
   fi
 
-  info "  $name registered with ID: $svc_id (after ${attempts}s)" >&2
   echo "$svc_id"
 }
 

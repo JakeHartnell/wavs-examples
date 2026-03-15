@@ -139,23 +139,22 @@ cast send "$RESPONDER_SM" "setServiceURI(string)" "$RESPONDER_URI" \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 success "setServiceURI → $RESPONDER_URI"
 
-curl -sf -X POST "$WAVS_URL/services" \
+RESP_REG=$(curl -sf -X POST "$WAVS_URL/services" \
   -H "Content-Type: application/json" \
-  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$RESPONDER_SM\"}}}" \
-  > /dev/null
+  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$RESPONDER_SM\"}}}")
 success "chain-responder registered with WAVS"
 
-info "Waiting 3s for WAVS to assign HD index..."
-sleep 3
-
-# Get chain-responder service ID (last in list)
-SERVICES_RESP=$(curl -sf "$WAVS_URL/services")
-RESPONDER_SERVICE_ID=$(echo "$SERVICES_RESP" | python3 -c "
+# WAVS v1.1+ returns service_id directly
+RESPONDER_SERVICE_ID=$(echo "$RESP_REG" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null) || true
+if [ -z "$RESPONDER_SERVICE_ID" ]; then
+  sleep 3
+  RESPONDER_SERVICE_ID=$(curl -sf "$WAVS_URL/services" | python3 -c "
 import json,sys
 ids = json.load(sys.stdin).get('service_ids', [])
 if not ids: raise SystemExit('No services found')
 print(ids[-1])
 ")
+fi
 success "chain-responder service ID: $RESPONDER_SERVICE_ID"
 
 # Get and fund signing key
@@ -219,22 +218,22 @@ cast send "$CALLER_SM" "setServiceURI(string)" "$CALLER_URI" \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
 success "setServiceURI → $CALLER_URI"
 
-curl -sf -X POST "$WAVS_URL/services" \
+CALLER_REG=$(curl -sf -X POST "$WAVS_URL/services" \
   -H "Content-Type: application/json" \
-  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$CALLER_SM\"}}}" \
-  > /dev/null
+  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$CALLER_SM\"}}}")
 success "chain-caller registered with WAVS"
 
-info "Waiting 3s for WAVS to assign HD index..."
-sleep 3
-
-SERVICES_RESP=$(curl -sf "$WAVS_URL/services")
-CALLER_SERVICE_ID=$(echo "$SERVICES_RESP" | python3 -c "
+# WAVS v1.1+ returns service_id directly
+CALLER_SERVICE_ID=$(echo "$CALLER_REG" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null) || true
+if [ -z "$CALLER_SERVICE_ID" ]; then
+  sleep 3
+  CALLER_SERVICE_ID=$(curl -sf "$WAVS_URL/services" | python3 -c "
 import json,sys
 ids = json.load(sys.stdin).get('service_ids', [])
 if not ids: raise SystemExit('No services found')
 print(ids[-1])
 ")
+fi
 success "chain-caller service ID: $CALLER_SERVICE_ID"
 
 SIGNER_RESP=$(curl -sf -X POST "$WAVS_URL/services/signer" \
