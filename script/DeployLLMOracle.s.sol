@@ -4,16 +4,16 @@ pragma solidity 0.8.27;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {SimpleTrigger} from "../src/contracts/WavsTrigger.sol";
-import {LLMSubmit} from "../src/contracts/LLMSubmit.sol";
+import {AgentSubmit} from "../src/contracts/AgentSubmit.sol";
 import {SimpleServiceManager} from "../src/contracts/SimpleServiceManager.sol";
 
 /**
  * @title DeployLLMOracle
- * @notice Deploys the contracts needed for the llm-oracle example.
+ * @notice Deploys the contracts needed for the llm-agent example.
  *
- *   SimpleTrigger        — users call addTrigger(string) to submit an LLM prompt
+ *   SimpleTrigger        — users call addTrigger(string) to submit a prompt
  *   SimpleServiceManager — validates operator signatures; stores service URI
- *   LLMSubmit            — receives and stores verified LLM inference results
+ *   AgentSubmit          — receives verified agent results with on-chain tool call audit trail
  *
  * Usage (local Anvil):
  *   forge script script/DeployLLMOracle.s.sol --rpc-url http://localhost:8545 --broadcast
@@ -30,9 +30,9 @@ contract DeployLLMOracle is Script {
         // 1. Deploy service manager first (submit contract needs its address)
         SimpleServiceManager serviceManager = new SimpleServiceManager();
 
-        // 2. Deploy trigger and LLM submit contracts
+        // 2. Deploy trigger and agent submit contracts
         SimpleTrigger trigger = new SimpleTrigger();
-        LLMSubmit llmSubmit = new LLMSubmit(serviceManager);
+        AgentSubmit agentSubmit = new AgentSubmit(serviceManager);
 
         // 3. Configure quorum: single operator, threshold = 1
         serviceManager.setThresholdWeight(1);
@@ -43,6 +43,6 @@ contract DeployLLMOracle is Script {
         // Output addresses for scripts to capture
         console.log("TRIGGER_ADDR=%s", address(trigger));
         console.log("SERVICE_MANAGER_ADDR=%s", address(serviceManager));
-        console.log("LLM_SUBMIT_ADDR=%s", address(llmSubmit));
+        console.log("AGENT_SUBMIT_ADDR=%s", address(agentSubmit));
     }
 }

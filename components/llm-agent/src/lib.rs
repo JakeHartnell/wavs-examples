@@ -13,13 +13,22 @@ use trigger::{decode_trigger_event, encode_trigger_output, Destination};
 struct Component;
 export!(Component with_types_in bindings);
 
-// ── ABI output type ──────────────────────────────────────────────────────────
+// ── ABI output types ─────────────────────────────────────────────────────────
 
 sol! {
+    /// On-chain record of a single tool call: hashes are stored for verification.
+    struct ToolCall {
+        string toolName;
+        bytes32 argsHash;
+        bytes32 resultHash;
+    }
+
+    /// ABI-encoded result committed on-chain via AgentSubmit.handleSignedEnvelope().
     struct LLMResult {
         uint64 triggerId;
         string response;
         bytes32 responseHash;
+        ToolCall[] toolCalls;
     }
 }
 
@@ -143,6 +152,7 @@ impl Guest for Component {
 
         let mut final_response = String::new();
         let mut iterations = 0;
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
 
         // ── ReAct tool loop ───────────────────────────────────────────────────
         loop {
@@ -204,6 +214,13 @@ impl Guest for Component {
                         tc.tool, &result_json[..result_json.len().min(300)]),
                 );
 
+                // Record tool call for on-chain audit trail
+                tool_calls.push(ToolCall {
+                    toolName: tc.tool.clone(),
+                    argsHash: keccak256(tc.args.to_string().as_bytes()).into(),
+                    resultHash: keccak256(result_json.as_bytes()).into(),
+                });
+
                 // Append tool call + result to conversation
                 messages.push(Message {
                     role: "assistant".to_string(),
@@ -235,6 +252,7 @@ impl Guest for Component {
             triggerId: trigger_id,
             response: final_response.clone(),
             responseHash: response_hash.into(),
+            toolCalls: tool_calls,
         };
 
         let output = match dest {
@@ -242,13 +260,21 @@ impl Guest for Component {
                 vec![encode_trigger_output(trigger_id, &llm_result.abi_encode())]
             }
             Destination::CliOutput => {
+                let tool_calls_json: Vec<serde_json::Value> = llm_result.toolCalls.iter().map(|tc| {
+                    serde_json::json!({
+                        "toolName": tc.toolName,
+                        "argsHash": format!("0x{}", hex::encode(tc.argsHash.as_slice())),
+                        "resultHash": format!("0x{}", hex::encode(tc.resultHash.as_slice()))
+                    })
+                }).collect();
                 vec![WasmResponse {
-                    payload: format!(
-                        "{{\"triggerId\":{},\"response\":{:?},\"responseHash\":\"0x{}\"}}",
-                        trigger_id,
-                        final_response,
-                        hex::encode(response_hash.as_slice())
-                    )
+                    payload: serde_json::json!({
+                        "triggerId": trigger_id,
+                        "response": final_response,
+                        "responseHash": format!("0x{}", hex::encode(response_hash.as_slice())),
+                        "toolCalls": tool_calls_json
+                    })
+                    .to_string()
                     .into_bytes(),
                     ordering: None,
                     event_id_salt: None,

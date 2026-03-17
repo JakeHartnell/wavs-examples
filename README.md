@@ -69,6 +69,28 @@ cd examples/basics/01-echo
 task deploy
 ```
 
+## LLM Agent
+
+The `components/llm-agent/` directory contains a production-ready **Verifiable Agent Tool Protocol (VATP)** implementation: a WASM component that runs a ReAct-style reasoning loop, calls other WAVS services as tools, and commits every tool invocation on-chain as a cryptographic audit trail.
+
+**What makes it different from a regular LLM wrapper:**
+- Tool calls are dispatched to other *verifiable* WAVS services — not raw HTTP endpoints
+- Every tool call records `keccak256(args)` + `keccak256(result)` on-chain via `AgentSubmit`
+- Works with Ollama (local), OpenAI, Anthropic, or any OpenAI-compatible provider
+- One-command demo deploys a weather oracle + crypto price oracle as tools
+
+```bash
+# Start local stack, then run the full demo:
+task start-all-local
+./scripts/deploy-llm-agent.sh
+
+# With a cloud LLM:
+LLM_API_KEY=sk-ant-... LLM_API_URL=https://api.anthropic.com LLM_MODEL=claude-opus-4-5 \
+  ./scripts/deploy-llm-agent.sh
+```
+
+See [`components/llm-agent/README.md`](components/llm-agent/README.md) for the full tool protocol spec, config reference, and on-chain audit trail documentation.
+
 ## The agent angle
 
 WAVS is uniquely powerful for AI agents. Think about what an agent normally lacks:

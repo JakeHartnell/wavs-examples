@@ -49,24 +49,6 @@ success() { echo -e "${GREEN}✅ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
 die()     { echo -e "${RED}❌ $*${NC}"; exit 1; }
 
-# Extract a field from JSON response — shows raw response on failure
-json_field() {
-  local field="$1"
-  local raw
-  raw=$(cat)
-  python3 -c "
-import json, sys
-try:
-    d = json.loads('''$( echo "$raw" | python3 -c "import sys; print(sys.stdin.read().replace(\"'\", \"'\\\\''\"))" )''')
-    val = d$(echo "$field")
-    print(val)
-except Exception as e:
-    print('ERROR: ' + str(e), file=sys.stderr)
-    print('Raw response: ' + '''$( echo "$raw" | head -c 500 )''', file=sys.stderr)
-    sys.exit(1)
-" 2>&1 || { echo "JSON parse failed for field $field"; echo "Raw: $raw" >&2; exit 1; }
-}
-
 # Simpler extractor using python -c with heredoc-safe approach
 extract() {
   local resp="$1"
@@ -87,9 +69,32 @@ echo "╔═══════════════════════�
 echo "║          Verifiable Agent Tool Protocol — Deploy             ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
+echo "  RPC:    $RPC_URL"
 echo "  WAVS:   $WAVS_URL"
 echo "  LLM:    $LLM_API_URL  (model: $LLM_MODEL)"
 echo "  Prompt: $PROMPT"
+echo ""
+
+# =============================================================================
+# 0. Pre-flight checks
+# =============================================================================
+info "Running pre-flight checks..."
+
+# Check Anvil / RPC
+if ! curl -sf --connect-timeout 3 -X POST "$RPC_URL" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+    > /dev/null 2>&1; then
+  die "Anvil is not reachable at $RPC_URL\n\n  Start the local stack first:\n    task start-all-local"
+fi
+success "Anvil reachable at $RPC_URL"
+
+# Check WAVS node
+if ! curl -sf --connect-timeout 3 "$WAVS_URL/services" > /dev/null 2>&1; then
+  die "WAVS node is not reachable at $WAVS_URL\n\n  Start the local stack first:\n    task start-all-local"
+fi
+success "WAVS node reachable at $WAVS_URL"
+
 echo ""
 
 # =============================================================================
@@ -127,12 +132,12 @@ deploy_contracts() {
     --private-key "$PRIVATE_KEY" \
     2>&1)
   local trigger sm submit
-  trigger=$(echo "$out" | grep "TRIGGER_ADDR="         | tail -1 | cut -d= -f2 | tr -d ' \r')
+  trigger=$(echo "$out" | grep "TRIGGER_ADDR="       | tail -1 | cut -d= -f2 | tr -d ' \r')
   sm=$(echo "$out"      | grep "SERVICE_MANAGER_ADDR=" | tail -1 | cut -d= -f2 | tr -d ' \r')
-  submit=$(echo "$out"  | grep "LLM_SUBMIT_ADDR="      | tail -1 | cut -d= -f2 | tr -d ' \r')
+  submit=$(echo "$out"  | grep "AGENT_SUBMIT_ADDR="  | tail -1 | cut -d= -f2 | tr -d ' \r')
   [ -n "$trigger" ] || { echo "$out" >&2; die "No TRIGGER_ADDR in forge output"; }
   [ -n "$sm" ]      || die "No SERVICE_MANAGER_ADDR in forge output"
-  [ -n "$submit" ]  || die "No LLM_SUBMIT_ADDR in forge output"
+  [ -n "$submit" ]  || die "No AGENT_SUBMIT_ADDR in forge output"
   echo "$trigger $sm $submit"
 }
 
@@ -141,7 +146,7 @@ read -r WEATHER_TRIGGER WEATHER_SM WEATHER_SUBMIT <<< "$(deploy_contracts)"
 read -r CRYPTO_TRIGGER  CRYPTO_SM  CRYPTO_SUBMIT  <<< "$(deploy_contracts)"
 
 success "Contracts deployed"
-echo "  Agent:   trigger=$AGENT_TRIGGER  sm=$AGENT_SM"
+echo "  Agent:   trigger=$AGENT_TRIGGER  sm=$AGENT_SM  submit=$AGENT_SUBMIT"
 echo "  Weather: trigger=$WEATHER_TRIGGER"
 echo "  Crypto:  trigger=$CRYPTO_TRIGGER"
 
@@ -429,7 +434,7 @@ cast send "$AGENT_TRIGGER" "addTrigger(string)" "$PROMPT" \
 
 success "Trigger sent!"
 echo ""
-echo "Waiting for agent (LLM inference + tool calls + aggregation)..."
+echo "Waiting for agent response (LLM inference + tool calls + aggregation)..."
 echo "Typical: 30–60s for OpenAI/Anthropic, 2–5min for local Ollama"
 echo ""
 
@@ -442,7 +447,16 @@ for i in $(seq 1 $WAIT); do
     success "Agent response committed! (after ${i}s)"
     break
   fi
-  printf "\r  [%3ds / %ds] polling isComplete(1)..." "$i" "$WAIT"
+
+  # Stage-aware progress message
+  if [ $i -le 15 ]; then
+    stage="initializing service..."
+  elif [ $i -le 90 ]; then
+    stage="LLM inference + tool calls running..."
+  else
+    stage="waiting for aggregation..."
+  fi
+  printf "\r  [%3ds / %ds] %s" "$i" "$WAIT" "$stage"
   sleep 1
 done
 
@@ -465,6 +479,17 @@ if [ "$IS_COMPLETE" = "true" ]; then
   echo ""
   echo "  $RESPONSE"
   echo ""
+
+  # Display on-chain tool call proof
+  echo "  On-chain tool call audit trail:"
+  TOOL_CALLS=$(cast call "$AGENT_SUBMIT" \
+    "getToolCalls(uint64)((string,bytes32,bytes32)[])" "1" \
+    --rpc-url "$RPC_URL" 2>/dev/null || echo "(decode error)")
+  echo "  $TOOL_CALLS"
+  echo ""
+  echo "  Verify manually:"
+  echo "    cast call $AGENT_SUBMIT 'getToolCalls(uint64)((string,bytes32,bytes32)[])' 1 --rpc-url $RPC_URL"
+  echo ""
 else
   warn "Not committed yet — check logs for what happened"
   echo ""
@@ -474,15 +499,30 @@ else
   echo ""
 fi
 
-echo "Check execution logs:"
+# =============================================================================
+# Summary table
+# =============================================================================
+echo ""
+echo "╔══════════════════════════════════════════════════════════════════╗"
+echo "║                   Deployment Summary                            ║"
+echo "╠══════════════════════════════════════════════════════════════════╣"
+printf "║  %-14s  service_id = %-32s  ║\n" "weather-oracle" "${WEATHER_SVC_ID:0:32}"
+printf "║  %-14s  trigger    = %-32s  ║\n" ""              "$WEATHER_TRIGGER"
+printf "║  %-14s  submit     = %-32s  ║\n" ""              "$WEATHER_SUBMIT"
+echo   "║                                                                  ║"
+printf "║  %-14s  service_id = %-32s  ║\n" "crypto-price"  "${CRYPTO_SVC_ID:0:32}"
+printf "║  %-14s  trigger    = %-32s  ║\n" ""              "$CRYPTO_TRIGGER"
+printf "║  %-14s  submit     = %-32s  ║\n" ""              "$CRYPTO_SUBMIT"
+echo   "║                                                                  ║"
+printf "║  %-14s  service_id = %-32s  ║\n" "llm-agent"     "${AGENT_SVC_ID:0:32}"
+printf "║  %-14s  trigger    = %-32s  ║\n" ""              "$AGENT_TRIGGER"
+printf "║  %-14s  submit     = %-32s  ║\n" ""              "$AGENT_SUBMIT"
+echo   "║                                                                  ║"
+printf "║  LLM: %-58s  ║\n" "$LLM_API_URL ($LLM_MODEL)"
+echo "╚══════════════════════════════════════════════════════════════════╝"
+echo ""
+echo "Execution logs:"
 echo "  curl -s $WAVS_URL/dev/logs/$AGENT_SVC_ID   | python3 -m json.tool | grep -A3 message"
 echo "  curl -s $WAVS_URL/dev/logs/$WEATHER_SVC_ID | python3 -m json.tool | grep -A3 message"
 echo "  curl -s $WAVS_URL/dev/logs/$CRYPTO_SVC_ID  | python3 -m json.tool | grep -A3 message"
 echo ""
-echo "════════════════════════════════════════════════════════════════"
-echo "  weather-oracle  svc=$WEATHER_SVC_ID"
-echo "  crypto-price    svc=$CRYPTO_SVC_ID"
-echo "  llm-agent       svc=$AGENT_SVC_ID"
-echo "  LLMSubmit:      $AGENT_SUBMIT"
-echo "  Agent trigger:  $AGENT_TRIGGER"
-echo "════════════════════════════════════════════════════════════════"
