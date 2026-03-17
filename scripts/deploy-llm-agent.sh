@@ -2,19 +2,19 @@
 # =============================================================================
 # deploy-llm-agent.sh — Deploy and test the verifiable agent tool protocol
 #
-# Deploys three services:
-#   1. weather-oracle  — tool: get current weather for a city
-#   2. crypto-price    — tool: get current crypto price (CoinGecko)
-#   3. llm-agent       — orchestrator: ReAct loop calling the above tools
+# Deploys TWO services:
+#   1. agent-tools  — two workflows: "weather" + "crypto_price"
+#                     (shared service manager, one signing key)
+#   2. llm-agent    — orchestrator: ReAct loop calling the above tools
 #
 # Requires:
 #   - Anvil running at $RPC_URL           (default: http://localhost:8545)
 #   - WAVS node at $WAVS_URL              (default: http://localhost:8041)
-#   - LLM accessible via $LLM_API_URL    (default: http://localhost:11434 Ollama)
+#   - LLM accessible via $LLM_API_URL
 #   - forge, cast, cargo-component in PATH
 #
 # Config:
-#   LLM_API_URL   — default: http://localhost:11434
+#   LLM_API_URL   — default: http://localhost:11434  (Ollama on wavs-app / native)
 #   LLM_MODEL     — default: llama3.2
 #   LLM_API_KEY   — if set: switches to OpenAI-compatible or Anthropic mode
 #   PROMPT        — default: "What is the current weather in London and the BTC price?"
@@ -32,15 +32,15 @@ WAVS_URL="${WAVS_URL:-http://localhost:8041}"
 CHAIN_ID="${CHAIN_ID:-evm:31337}"
 PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
 
-# LLM config — component uses host.docker.internal since it runs inside Docker
-LLM_API_URL="${LLM_API_URL:-http://host.docker.internal:11434}"
+# LLM config
+# NOTE: wavs-app runs WASM natively (not in Docker), so Ollama is at localhost.
+#       If running inside Docker, change to http://host.docker.internal:11434
+LLM_API_URL="${LLM_API_URL:-http://localhost:11434}"
 LLM_MODEL="${LLM_MODEL:-llama3.2}"
 LLM_API_KEY="${LLM_API_KEY:-}"
 PROMPT="${PROMPT:-What is the current weather in London and the current price of BTC? Answer in two sentences.}"
 
-# WAVS URL that the WASM component uses to call other services.
-# Component runs inside the WAVS Docker container, so localhost reaches the WAVS REST API directly.
-# (host.docker.internal is Mac/Windows Docker Desktop only — not available on Linux)
+# WAVS REST URL that the WASM component uses to dispatch tool calls.
 WAVS_INTERNAL_URL="${WAVS_INTERNAL_URL:-http://localhost:8041}"
 
 GREEN="\033[0;32m"; BLUE="\033[0;34m"; YELLOW="\033[0;33m"; RED="\033[0;31m"; NC="\033[0m"
@@ -49,16 +49,14 @@ success() { echo -e "${GREEN}✅ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
 die()     { echo -e "${RED}❌ $*${NC}"; exit 1; }
 
-# Simpler extractor using python -c with heredoc-safe approach
 extract() {
-  local resp="$1"
-  local field="$2"
+  local resp="$1" field="$2"
   python3 -c "
 import json, sys
 try:
     d = json.loads(sys.argv[1])
     print(d$field)
-except Exception as e:
+except Exception:
     print('', end='')
     sys.exit(1)
 " "$resp"
@@ -80,7 +78,6 @@ echo ""
 # =============================================================================
 info "Running pre-flight checks..."
 
-# Check Anvil / RPC
 if ! curl -sf --connect-timeout 3 -X POST "$RPC_URL" \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
@@ -89,7 +86,6 @@ if ! curl -sf --connect-timeout 3 -X POST "$RPC_URL" \
 fi
 success "Anvil reachable at $RPC_URL"
 
-# Check WAVS node
 if ! curl -sf --connect-timeout 3 "$WAVS_URL/services" > /dev/null 2>&1; then
   die "WAVS node is not reachable at $WAVS_URL\n\n  Start the local stack first:\n    task start-all-local"
 fi
@@ -98,7 +94,40 @@ success "WAVS node reachable at $WAVS_URL"
 echo ""
 
 # =============================================================================
-# 1. Build all WASM components
+# 1. Clean up any previously registered services from prior runs
+# =============================================================================
+info "Cleaning up stale services from previous runs..."
+
+STALE_IDS=$(curl -s "$WAVS_URL/services" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+services = d.get('services', [])
+ids = d.get('service_ids', [])
+target_names = {'weather-oracle', 'crypto-price', 'agent-tools', 'llm-agent'}
+for svc, sid in zip(services, ids):
+    if svc.get('name') in target_names:
+        print(sid)
+" 2>/dev/null || true)
+
+if [ -n "$STALE_IDS" ]; then
+  while IFS= read -r sid; do
+    [ -z "$sid" ] && continue
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$WAVS_URL/services/$sid" 2>/dev/null) || true
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+      echo "  Removed stale service: ${sid:0:16}..."
+    else
+      warn "  Could not remove ${sid:0:16}... (HTTP $HTTP_CODE) — continuing anyway"
+    fi
+  done <<< "$STALE_IDS"
+  success "Stale services cleaned up"
+else
+  echo "  No stale services found"
+fi
+
+echo ""
+
+# =============================================================================
+# 2. Build all WASM components
 # =============================================================================
 info "Building WASM components..."
 cargo component build --release \
@@ -120,54 +149,60 @@ done
 success "All components built"
 
 # =============================================================================
-# 2. Deploy contracts — 3 independent sets (agent + weather tool + crypto tool)
+# 3. Deploy contracts
+#    - DeployTools.s.sol   → ONE service manager + 2 triggers + 2 SimpleSubmit
+#    - DeployLLMOracle.s.sol → agent trigger + agent SM + AgentSubmit
 # =============================================================================
-info "Deploying contracts (3 sets: agent, weather tool, crypto tool)..."
+info "Deploying contracts (tools + agent)..."
 
-deploy_contracts() {
-  local out
-  out=$(forge script script/DeployLLMOracle.s.sol \
+run_forge() {
+  local script="$1"
+  forge script "$script" \
     --rpc-url "$RPC_URL" \
     --broadcast \
     --private-key "$PRIVATE_KEY" \
-    2>&1)
-  local trigger sm submit
-  trigger=$(echo "$out" | grep "TRIGGER_ADDR="       | tail -1 | cut -d= -f2 | tr -d ' \r')
-  sm=$(echo "$out"      | grep "SERVICE_MANAGER_ADDR=" | tail -1 | cut -d= -f2 | tr -d ' \r')
-  submit=$(echo "$out"  | grep "AGENT_SUBMIT_ADDR="  | tail -1 | cut -d= -f2 | tr -d ' \r')
-  [ -n "$trigger" ] || { echo "$out" >&2; die "No TRIGGER_ADDR in forge output"; }
-  [ -n "$sm" ]      || die "No SERVICE_MANAGER_ADDR in forge output"
-  [ -n "$submit" ]  || die "No AGENT_SUBMIT_ADDR in forge output"
-  echo "$trigger $sm $submit"
+    2>&1
 }
 
-read -r AGENT_TRIGGER  AGENT_SM  AGENT_SUBMIT  <<< "$(deploy_contracts)"
-read -r WEATHER_TRIGGER WEATHER_SM WEATHER_SUBMIT <<< "$(deploy_contracts)"
-read -r CRYPTO_TRIGGER  CRYPTO_SM  CRYPTO_SUBMIT  <<< "$(deploy_contracts)"
+# Tools contracts (shared SM for weather + crypto workflows)
+TOOLS_OUT=$(run_forge script/DeployTools.s.sol)
+TOOLS_SM=$(echo "$TOOLS_OUT"       | grep "TOOLS_SM_ADDR="        | tail -1 | cut -d= -f2 | tr -d ' \r')
+WEATHER_TRIGGER=$(echo "$TOOLS_OUT" | grep "WEATHER_TRIGGER_ADDR=" | tail -1 | cut -d= -f2 | tr -d ' \r')
+WEATHER_SUBMIT=$(echo "$TOOLS_OUT"  | grep "WEATHER_SUBMIT_ADDR="  | tail -1 | cut -d= -f2 | tr -d ' \r')
+CRYPTO_TRIGGER=$(echo "$TOOLS_OUT"  | grep "CRYPTO_TRIGGER_ADDR="  | tail -1 | cut -d= -f2 | tr -d ' \r')
+CRYPTO_SUBMIT=$(echo "$TOOLS_OUT"   | grep "CRYPTO_SUBMIT_ADDR="   | tail -1 | cut -d= -f2 | tr -d ' \r')
+[ -n "$TOOLS_SM" ] || { echo "$TOOLS_OUT" >&2; die "No TOOLS_SM_ADDR in forge output"; }
+
+# Agent contracts
+AGENT_OUT=$(run_forge script/DeployLLMOracle.s.sol)
+AGENT_TRIGGER=$(echo "$AGENT_OUT" | grep "TRIGGER_ADDR="         | tail -1 | cut -d= -f2 | tr -d ' \r')
+AGENT_SM=$(echo "$AGENT_OUT"      | grep "SERVICE_MANAGER_ADDR=" | tail -1 | cut -d= -f2 | tr -d ' \r')
+AGENT_SUBMIT=$(echo "$AGENT_OUT"  | grep "AGENT_SUBMIT_ADDR="    | tail -1 | cut -d= -f2 | tr -d ' \r')
+[ -n "$AGENT_TRIGGER" ] || { echo "$AGENT_OUT" >&2; die "No TRIGGER_ADDR in forge output"; }
 
 success "Contracts deployed"
-echo "  Agent:   trigger=$AGENT_TRIGGER  sm=$AGENT_SM  submit=$AGENT_SUBMIT"
-echo "  Weather: trigger=$WEATHER_TRIGGER"
-echo "  Crypto:  trigger=$CRYPTO_TRIGGER"
+echo "  Tools SM:        $TOOLS_SM"
+echo "  Weather trigger: $WEATHER_TRIGGER  submit: $WEATHER_SUBMIT"
+echo "  Crypto trigger:  $CRYPTO_TRIGGER   submit: $CRYPTO_SUBMIT"
+echo "  Agent trigger:   $AGENT_TRIGGER    sm: $AGENT_SM    submit: $AGENT_SUBMIT"
 
 EVENT_HASH=$(cast keccak "NewTrigger(bytes)")
 
 # =============================================================================
-# 3. Upload WASM components to WAVS node
+# 4. Upload WASM components to WAVS node
 # =============================================================================
 info "Uploading components to WAVS node at $WAVS_URL..."
 
 upload_component() {
   local name="$1" wasm_path="$2"
-  local resp
+  local resp digest
   resp=$(curl -s -X POST "$WAVS_URL/dev/components" \
     -H "Content-Type: application/wasm" \
     --data-binary @"$wasm_path")
-  local digest
-  digest=$(extract "$resp" "['digest']") || { echo ""; }
+  digest=$(extract "$resp" "['digest']") || true
   if [ -z "$digest" ]; then
     echo "  Raw response: $resp" >&2
-    die "Failed to upload $name — empty digest. Is WAVS running at $WAVS_URL?"
+    die "Failed to upload $name — empty digest"
   fi
   echo "$digest"
 }
@@ -185,25 +220,163 @@ AGG_DIGEST=$(upload_component aggregator "$AGG_WASM")
 success "aggregator:     $AGG_DIGEST"
 
 # =============================================================================
-# 4. Register a service — write JSON to tmpfile to avoid interpolation issues
+# 5. Register agent-tools service (two workflows: weather + crypto_price)
 # =============================================================================
 TMPDIR_DEPLOY=$(mktemp -d)
 trap "rm -rf $TMPDIR_DEPLOY" EXIT
 
-register_service() {
-  local name="$1" sm="$2" trigger="$3" component_digest="$4" submit="$5"
-  local config_file="$6"  # path to a JSON file with component config vars
+info "Registering agent-tools service (weather + crypto_price workflows)..."
 
-  local svc_file="$TMPDIR_DEPLOY/${name}-service.json"
-
-  python3 - "$name" "$sm" "$trigger" "$EVENT_HASH" "$component_digest" \
-                    "$AGG_DIGEST" "$submit" "$CHAIN_ID" "$config_file" "$svc_file" << 'PYEOF'
+python3 - "$TOOLS_SM" \
+           "$WEATHER_TRIGGER" "$WEATHER_DIGEST" "$WEATHER_SUBMIT" \
+           "$CRYPTO_TRIGGER"  "$CRYPTO_DIGEST"  "$CRYPTO_SUBMIT"  \
+           "$AGG_DIGEST" "$EVENT_HASH" "$CHAIN_ID" \
+           "$TMPDIR_DEPLOY/tools-service.json" << 'PYEOF'
 import json, sys
-name, sm, trigger, event_hash, comp_digest, agg_digest, submit, chain_id, config_file, out_file = sys.argv[1:]
+sm, wt, wd, ws, ct, crd, cs, agg, event_hash, chain_id, out_file = sys.argv[1:]
+
+def workflow(trigger_addr, comp_digest, submit_addr, comp_config=None):
+    return {
+        "trigger": {
+            "evm_contract_event": {
+                "chain": chain_id,
+                "address": trigger_addr,
+                "event_hash": event_hash
+            }
+        },
+        "component": {
+            "source": {"digest": comp_digest},
+            "permissions": {
+                "allowed_http_hosts": "all",
+                "file_system": False,
+                "raw_sockets": False,
+                "dns_resolution": True
+            },
+            "env_keys": [],
+            "config": comp_config or {},
+            "time_limit_seconds": 300
+        },
+        "submit": {
+            "aggregator": {
+                "component": {
+                    "source": {"digest": agg},
+                    "permissions": {
+                        "allowed_http_hosts": "none",
+                        "file_system": False,
+                        "raw_sockets": False,
+                        "dns_resolution": False
+                    },
+                    "env_keys": [],
+                    "config": {chain_id: submit_addr}
+                },
+                "signature_kind": {"algorithm": "secp256k1", "prefix": "eip191"}
+            }
+        }
+    }
+
+svc = {
+    "name": "agent-tools",
+    "status": "active",
+    "manager": {"evm": {"chain": chain_id, "address": sm}},
+    "workflows": {
+        "weather":      workflow(wt, wd, ws),
+        "crypto_price": workflow(ct, crd, cs)
+    }
+}
+with open(out_file, 'w') as f:
+    json.dump(svc, f, indent=2)
+PYEOF
+
+# POST service definition
+TOOLS_RESP=$(curl -s -X POST "$WAVS_URL/dev/services" \
+  -H "Content-Type: application/json" \
+  -d @"$TMPDIR_DEPLOY/tools-service.json")
+TOOLS_HASH=$(extract "$TOOLS_RESP" "['hash']") || true
+[ -n "$TOOLS_HASH" ] || { echo "  Raw: $TOOLS_RESP" >&2; die "Failed to save agent-tools service"; }
+
+# Set URI on-chain
+TOOLS_URI="http://127.0.0.1:8041/dev/services/$TOOLS_HASH"
+cast send "$TOOLS_SM" "setServiceURI(string)" "$TOOLS_URI" \
+  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet >/dev/null 2>&1
+
+# Register with WAVS node
+TOOLS_REG=$(curl -s -X POST "$WAVS_URL/services" \
+  -H "Content-Type: application/json" \
+  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$TOOLS_SM\"}}}")
+
+TOOLS_SVC_ID=$(echo "$TOOLS_REG" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null) || true
+
+if [ -z "$TOOLS_SVC_ID" ]; then
+  attempts=0
+  while [ -z "$TOOLS_SVC_ID" ] && [ $attempts -lt 20 ]; do
+    sleep 1; attempts=$((attempts + 1))
+    TOOLS_SVC_ID=$(curl -s "$WAVS_URL/services" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+sm_lower = '$TOOLS_SM'.lower()
+for svc, sid in zip(d.get('services',[]), d.get('service_ids',[])):
+    if svc.get('manager',{}).get('evm',{}).get('address','').lower() == sm_lower:
+        print(sid); break
+" 2>/dev/null) || true
+  done
+  [ -n "$TOOLS_SVC_ID" ] || die "Failed to get service_id for agent-tools"
+fi
+success "agent-tools service ID: $TOOLS_SVC_ID"
+
+# =============================================================================
+# 6. Register llm-agent service
+# =============================================================================
+info "Registering llm-agent with tool manifest..."
+
+# Write agent config — tools reference TOOLS_SVC_ID with different workflow_ids
+python3 - "$LLM_API_URL" "$LLM_MODEL" "$LLM_API_KEY" \
+           "$TOOLS_SVC_ID" \
+           "$WAVS_INTERNAL_URL" \
+           "$TMPDIR_DEPLOY/agent-config.json" << 'PYEOF'
+import json, sys
+api_url, model, api_key, tools_svc_id, wavs_url, out_file = sys.argv[1:]
+tools = [
+    {
+        "name": "weather",
+        "service_id": tools_svc_id,
+        "description": "Get current weather for a city. Args: {\"city\": string}",
+        "workflow_id": "weather"
+    },
+    {
+        "name": "crypto_price",
+        "service_id": tools_svc_id,
+        "description": "Get current cryptocurrency price in USD. Args: {\"symbol\": string} e.g. BTC, ETH, SOL",
+        "workflow_id": "crypto_price"
+    }
+]
+config = {
+    "llm_api_url": api_url,
+    "llm_model": model,
+    "tools": json.dumps(tools),
+    "max_tool_calls": "5",
+    "wavs_node_url": wavs_url
+}
+if api_key:
+    config["llm_api_key"] = api_key
+with open(out_file, 'w') as f:
+    json.dump(config, f, indent=2)
+PYEOF
+
+echo "  Agent config:"
+python3 -m json.tool "$TMPDIR_DEPLOY/agent-config.json" | sed 's/^/    /'
+echo ""
+
+# Build agent service manifest
+python3 - "$AGENT_SM" "$AGENT_TRIGGER" "$AGENT_DIGEST" "$AGENT_SUBMIT" \
+           "$AGG_DIGEST" "$EVENT_HASH" "$CHAIN_ID" \
+           "$TMPDIR_DEPLOY/agent-config.json" \
+           "$TMPDIR_DEPLOY/agent-service.json" << 'PYEOF'
+import json, sys
+sm, trigger, comp_digest, submit, agg, event_hash, chain_id, config_file, out_file = sys.argv[1:]
 with open(config_file) as f:
     config = json.load(f)
 svc = {
-    "name": name,
+    "name": "llm-agent",
     "status": "active",
     "manager": {"evm": {"chain": chain_id, "address": sm}},
     "workflows": {
@@ -230,7 +403,7 @@ svc = {
             "submit": {
                 "aggregator": {
                     "component": {
-                        "source": {"digest": agg_digest},
+                        "source": {"digest": agg},
                         "permissions": {
                             "allowed_http_hosts": "none",
                             "file_system": False,
@@ -250,177 +423,85 @@ with open(out_file, 'w') as f:
     json.dump(svc, f)
 PYEOF
 
-  # POST service definition
-  local resp
-  resp=$(curl -s -X POST "$WAVS_URL/dev/services" \
-    -H "Content-Type: application/json" \
-    -d @"$svc_file")
-  local hash
-  hash=$(extract "$resp" "['hash']") || true
-  if [ -z "$hash" ]; then
-    echo "  Raw response: $resp" >&2
-    die "Failed to save service $name"
-  fi
+AGENT_HASH_RESP=$(curl -s -X POST "$WAVS_URL/dev/services" \
+  -H "Content-Type: application/json" \
+  -d @"$TMPDIR_DEPLOY/agent-service.json")
+AGENT_HASH=$(extract "$AGENT_HASH_RESP" "['hash']") || true
+[ -n "$AGENT_HASH" ] || { echo "  Raw: $AGENT_HASH_RESP" >&2; die "Failed to save llm-agent service"; }
 
-  # Set URI on-chain
-  local uri="http://127.0.0.1:8041/dev/services/$hash"
-  cast send "$sm" "setServiceURI(string)" "$uri" \
-    --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet \
-    >/dev/null 2>&1
+cast send "$AGENT_SM" "setServiceURI(string)" "http://127.0.0.1:8041/dev/services/$AGENT_HASH" \
+  --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet >/dev/null 2>&1
 
-  # Register with WAVS node — POST /services now returns {"service_id": "..."} directly (WAVS v1.1+)
-  local reg_resp
-  reg_resp=$(curl -s -X POST "$WAVS_URL/services" \
-    -H "Content-Type: application/json" \
-    -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$sm\"}}}")
+AGENT_REG=$(curl -s -X POST "$WAVS_URL/services" \
+  -H "Content-Type: application/json" \
+  -d "{\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$AGENT_SM\"}}}")
 
-  local svc_id
-  svc_id=$(echo "$reg_resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null) || true
+AGENT_SVC_ID=$(echo "$AGENT_REG" | python3 -c "import json,sys; print(json.load(sys.stdin)['service_id'])" 2>/dev/null) || true
 
-  # Fallback: poll GET /services if WAVS version predates service_id response
-  if [ -z "$svc_id" ]; then
-    local attempts=0
-    while [ -z "$svc_id" ] && [ $attempts -lt 20 ]; do
-      sleep 1
-      attempts=$((attempts + 1))
-      svc_id=$(curl -s "$WAVS_URL/services" | python3 -c "
+if [ -z "$AGENT_SVC_ID" ]; then
+  attempts=0
+  while [ -z "$AGENT_SVC_ID" ] && [ $attempts -lt 20 ]; do
+    sleep 1; attempts=$((attempts + 1))
+    AGENT_SVC_ID=$(curl -s "$WAVS_URL/services" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-services = d.get('services', [])
-service_ids = d.get('service_ids', [])
-sm_lower = '$sm'.lower()
-for i, svc in enumerate(services):
-    mgr = svc.get('manager', {}).get('evm', {}).get('address', '').lower()
-    if mgr == sm_lower and i < len(service_ids):
-        print(service_ids[i])
-        break
+sm_lower = '$AGENT_SM'.lower()
+for svc, sid in zip(d.get('services',[]), d.get('service_ids',[])):
+    if svc.get('manager',{}).get('evm',{}).get('address','').lower() == sm_lower:
+        print(sid); break
 " 2>/dev/null) || true
-    done
-
-    if [ -z "$svc_id" ]; then
-      echo "  Timed out waiting for service '$name' after ${attempts}s" >&2
-      curl -s "$WAVS_URL/services" | python3 -c "
-import json,sys; d=json.load(sys.stdin)
-print('Services:', [s.get('name') for s in d.get('services',[])])
-print('IDs:', d.get('service_ids',[]))
-" >&2
-      die "Failed to get service_id for $name"
-    fi
-
-    info "  $name registered with ID: $svc_id (via poll, ${attempts}s)" >&2
-  else
-    info "  $name registered with ID: $svc_id (direct)" >&2
-  fi
-
-  echo "$svc_id"
-}
-
-# =============================================================================
-# 5. Register weather-oracle
-# =============================================================================
-info "Registering weather-oracle..."
-echo '{}' > "$TMPDIR_DEPLOY/weather-config.json"
-WEATHER_SVC_ID=$(register_service \
-  weather-oracle "$WEATHER_SM" "$WEATHER_TRIGGER" \
-  "$WEATHER_DIGEST" "$WEATHER_SUBMIT" "$TMPDIR_DEPLOY/weather-config.json" \
-  | grep -E '^[0-9a-f]{64}$' | tail -1)
-success "weather-oracle service ID: $WEATHER_SVC_ID"
-
-# =============================================================================
-# 6. Register crypto-price
-# =============================================================================
-info "Registering crypto-price..."
-echo '{}' > "$TMPDIR_DEPLOY/crypto-config.json"
-CRYPTO_SVC_ID=$(register_service \
-  crypto-price "$CRYPTO_SM" "$CRYPTO_TRIGGER" \
-  "$CRYPTO_DIGEST" "$CRYPTO_SUBMIT" "$TMPDIR_DEPLOY/crypto-config.json" \
-  | grep -E '^[0-9a-f]{64}$' | tail -1)
-success "crypto-price service ID: $CRYPTO_SVC_ID"
-
-# =============================================================================
-# 7. Register llm-agent (config includes tool manifest with real service IDs)
-# =============================================================================
-info "Registering llm-agent with tool manifest..."
-
-# Write agent config to file — Python handles all escaping cleanly
-python3 - "$LLM_API_URL" "$LLM_MODEL" "$LLM_API_KEY" \
-           "$WEATHER_SVC_ID" "$CRYPTO_SVC_ID" \
-           "$WAVS_INTERNAL_URL" \
-           "$TMPDIR_DEPLOY/agent-config.json" << 'PYEOF'
-import json, sys
-api_url, model, api_key, weather_id, crypto_id, wavs_url, out_file = sys.argv[1:]
-tools = [
-    {
-        "name": "weather",
-        "service_id": weather_id,
-        "description": "Get current weather for a city. Args: {\"city\": string}",
-        "workflow_id": "default"
-    },
-    {
-        "name": "crypto_price",
-        "service_id": crypto_id,
-        "description": "Get current cryptocurrency price in USD. Args: {\"symbol\": string} e.g. BTC, ETH, SOL",
-        "workflow_id": "default"
-    }
-]
-config = {
-    "llm_api_url": api_url,
-    "llm_model": model,
-    "tools": json.dumps(tools),
-    "max_tool_calls": "5",
-    "wavs_node_url": wavs_url
-}
-if api_key:
-    config["llm_api_key"] = api_key
-with open(out_file, 'w') as f:
-    json.dump(config, f, indent=2)
-PYEOF
-
-echo "  Agent config:"
-cat "$TMPDIR_DEPLOY/agent-config.json" | python3 -m json.tool | sed 's/^/    /'
-echo ""
-
-AGENT_SVC_ID=$(register_service \
-  llm-agent "$AGENT_SM" "$AGENT_TRIGGER" \
-  "$AGENT_DIGEST" "$AGENT_SUBMIT" "$TMPDIR_DEPLOY/agent-config.json" \
-  | grep -E '^[0-9a-f]{64}$' | tail -1)
+  done
+  [ -n "$AGENT_SVC_ID" ] || die "Failed to get service_id for llm-agent"
+fi
 success "llm-agent service ID: $AGENT_SVC_ID"
 
 # =============================================================================
-# 8. Fund and register signing keys for all three services
+# 7. Fund and register signing keys
+#    - agent-tools: call signer for both workflows; register each unique key
+#    - llm-agent:   one signing key
 # =============================================================================
 info "Funding and registering signing keys..."
 
-fund_and_register() {
-  local sm="$1" svc_id="$2" name="$3"
+get_signer_key() {
+  local svc_id="$1" workflow_id="$2" sm="$3"
   local resp
   resp=$(curl -s -X POST "$WAVS_URL/services/signer" \
     -H "Content-Type: application/json" \
-    -d "{\"service_id\":\"$svc_id\",\"workflow_id\":\"default\",\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$sm\"}}}")
-  local key hd
-  key=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['secp256k1']['evm_address'])" "$resp" 2>/dev/null) || true
-  hd=$(python3  -c "import json,sys; d=json.loads(sys.argv[1]); print(d['secp256k1']['hd_index'])"   "$resp" 2>/dev/null) || true
-  if [ -z "$key" ]; then
-    echo "  Signer response: $resp" >&2
-    die "Failed to get signing key for $name"
-  fi
+    -d "{\"service_id\":\"$svc_id\",\"workflow_id\":\"$workflow_id\",\"service_manager\":{\"evm\":{\"chain\":\"$CHAIN_ID\",\"address\":\"$sm\"}}}")
+  python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['secp256k1']['evm_address'])" "$resp" 2>/dev/null || true
+}
+
+fund_key() {
+  local key="$1" sm="$2"
   cast send "$key" --value 1ether --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
   cast send "$sm" "setOperatorWeight(address,uint256)" "$key" 100 \
     --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --quiet
-  echo "$key (HD $hd)"
 }
 
-WEATHER_KEY=$(fund_and_register "$WEATHER_SM" "$WEATHER_SVC_ID" weather-oracle)
-success "weather-oracle key: $WEATHER_KEY"
+# Tools service — get keys for both workflows, register unique ones
+TOOLS_KEY_WEATHER=$(get_signer_key "$TOOLS_SVC_ID" "weather"       "$TOOLS_SM")
+TOOLS_KEY_CRYPTO=$(get_signer_key  "$TOOLS_SVC_ID" "crypto_price"  "$TOOLS_SM")
+[ -n "$TOOLS_KEY_WEATHER" ] || die "Failed to get signing key for agent-tools/weather"
+[ -n "$TOOLS_KEY_CRYPTO"  ] || die "Failed to get signing key for agent-tools/crypto_price"
 
-CRYPTO_KEY=$(fund_and_register "$CRYPTO_SM" "$CRYPTO_SVC_ID" crypto-price)
-success "crypto-price key:   $CRYPTO_KEY"
+fund_key "$TOOLS_KEY_WEATHER" "$TOOLS_SM"
+success "agent-tools weather key:      $TOOLS_KEY_WEATHER"
 
-AGENT_KEY=$(fund_and_register "$AGENT_SM" "$AGENT_SVC_ID" llm-agent)
-success "llm-agent key:      $AGENT_KEY"
+if [ "$TOOLS_KEY_CRYPTO" != "$TOOLS_KEY_WEATHER" ]; then
+  fund_key "$TOOLS_KEY_CRYPTO" "$TOOLS_SM"
+  success "agent-tools crypto_price key: $TOOLS_KEY_CRYPTO"
+else
+  success "agent-tools crypto_price key: $TOOLS_KEY_CRYPTO (shared with weather)"
+fi
+
+# Agent service
+AGENT_KEY=$(get_signer_key "$AGENT_SVC_ID" "default" "$AGENT_SM")
+[ -n "$AGENT_KEY" ] || die "Failed to get signing key for llm-agent"
+fund_key "$AGENT_KEY" "$AGENT_SM"
+success "llm-agent key:                $AGENT_KEY"
 
 # =============================================================================
-# 9. Fire the agent trigger
+# 8. Fire the agent trigger
 # =============================================================================
 echo ""
 info "Firing agent trigger..."
@@ -448,7 +529,6 @@ for i in $(seq 1 $WAIT); do
     break
   fi
 
-  # Stage-aware progress message
   if [ $i -le 15 ]; then
     stage="initializing service..."
   elif [ $i -le 90 ]; then
@@ -463,7 +543,7 @@ done
 echo ""
 
 # =============================================================================
-# 10. Read and display result
+# 9. Read and display result
 # =============================================================================
 IS_COMPLETE=$(cast call "$AGENT_SUBMIT" "isComplete(uint64)(bool)" "1" \
   --rpc-url "$RPC_URL" 2>/dev/null || echo "false")
@@ -480,7 +560,6 @@ if [ "$IS_COMPLETE" = "true" ]; then
   echo "  $RESPONSE"
   echo ""
 
-  # Display on-chain tool call proof
   echo "  On-chain tool call audit trail:"
   TOOL_CALLS=$(cast call "$AGENT_SUBMIT" \
     "getToolCalls(uint64)((string,bytes32,bytes32)[])" "1" \
@@ -493,7 +572,6 @@ if [ "$IS_COMPLETE" = "true" ]; then
 else
   warn "Not committed yet — check logs for what happened"
   echo ""
-  echo "Poll manually:"
   echo "  cast call $AGENT_SUBMIT 'isComplete(uint64)(bool)' 1 --rpc-url $RPC_URL"
   echo "  cast call $AGENT_SUBMIT 'getResponse(uint64)(string,bytes32)' 1 --rpc-url $RPC_URL"
   echo ""
@@ -506,23 +584,19 @@ echo ""
 echo "╔══════════════════════════════════════════════════════════════════╗"
 echo "║                   Deployment Summary                            ║"
 echo "╠══════════════════════════════════════════════════════════════════╣"
-printf "║  %-14s  service_id = %-32s  ║\n" "weather-oracle" "${WEATHER_SVC_ID:0:32}"
-printf "║  %-14s  trigger    = %-32s  ║\n" ""              "$WEATHER_TRIGGER"
-printf "║  %-14s  submit     = %-32s  ║\n" ""              "$WEATHER_SUBMIT"
+printf "║  %-16s  service_id = %-32s  ║\n" "agent-tools"    "${TOOLS_SVC_ID:0:32}"
+printf "║  %-16s  sm         = %-32s  ║\n" ""               "$TOOLS_SM"
+printf "║  %-16s  weather    = %-32s  ║\n" ""               "$WEATHER_TRIGGER"
+printf "║  %-16s  crypto     = %-32s  ║\n" ""               "$CRYPTO_TRIGGER"
 echo   "║                                                                  ║"
-printf "║  %-14s  service_id = %-32s  ║\n" "crypto-price"  "${CRYPTO_SVC_ID:0:32}"
-printf "║  %-14s  trigger    = %-32s  ║\n" ""              "$CRYPTO_TRIGGER"
-printf "║  %-14s  submit     = %-32s  ║\n" ""              "$CRYPTO_SUBMIT"
-echo   "║                                                                  ║"
-printf "║  %-14s  service_id = %-32s  ║\n" "llm-agent"     "${AGENT_SVC_ID:0:32}"
-printf "║  %-14s  trigger    = %-32s  ║\n" ""              "$AGENT_TRIGGER"
-printf "║  %-14s  submit     = %-32s  ║\n" ""              "$AGENT_SUBMIT"
+printf "║  %-16s  service_id = %-32s  ║\n" "llm-agent"      "${AGENT_SVC_ID:0:32}"
+printf "║  %-16s  trigger    = %-32s  ║\n" ""               "$AGENT_TRIGGER"
+printf "║  %-16s  submit     = %-32s  ║\n" ""               "$AGENT_SUBMIT"
 echo   "║                                                                  ║"
 printf "║  LLM: %-58s  ║\n" "$LLM_API_URL ($LLM_MODEL)"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Execution logs:"
-echo "  curl -s $WAVS_URL/dev/logs/$AGENT_SVC_ID   | python3 -m json.tool | grep -A3 message"
-echo "  curl -s $WAVS_URL/dev/logs/$WEATHER_SVC_ID | python3 -m json.tool | grep -A3 message"
-echo "  curl -s $WAVS_URL/dev/logs/$CRYPTO_SVC_ID  | python3 -m json.tool | grep -A3 message"
+echo "  curl -s $WAVS_URL/dev/logs/$AGENT_SVC_ID  | python3 -m json.tool | grep -A3 message"
+echo "  curl -s $WAVS_URL/dev/logs/$TOOLS_SVC_ID  | python3 -m json.tool | grep -A3 message"
 echo ""
