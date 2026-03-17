@@ -8,7 +8,7 @@ use crate::bindings::{export, Guest, TriggerAction, WasmResponse};
 use alloy_sol_types::SolValue;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use trigger::{decode_trigger_event, encode_trigger_output, Destination};
+use trigger::{decode_trigger_event, encode_trigger_output};
 
 struct Component;
 export!(Component with_types_in bindings);
@@ -109,7 +109,7 @@ mod http {
 
 impl Guest for Component {
     fn run(action: TriggerAction) -> Result<Vec<WasmResponse>, String> {
-        let (trigger_id, req, dest) =
+        let (trigger_id, req, _dest) =
             decode_trigger_event(action.data).map_err(|e| e.to_string())?;
 
         // Trigger data accepts three formats (in priority order):
@@ -140,13 +140,9 @@ impl Guest for Component {
         bucket.set("result", &res)
             .map_err(|e| format!("kv set 'result': {:?}", e))?;
 
-        let output = match dest {
-            Destination::Ethereum => vec![encode_trigger_output(trigger_id, &res)],
-            Destination::CliOutput => {
-                vec![WasmResponse { payload: res.into(), ordering: None, event_id_salt: None }]
-            }
-        };
-        Ok(output)
+        // Always ABI-encode as DataWithId so on-chain submissions via SimpleSubmit succeed.
+        // This includes tool-protocol calls (TriggerData::Raw) which get trigger_id=0.
+        Ok(vec![encode_trigger_output(trigger_id, &res)])
     }
 }
 

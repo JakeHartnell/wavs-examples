@@ -16,7 +16,7 @@ use crate::bindings::wavs::types::core::LogLevel;
 use crate::bindings::wasi::keyvalue::store;
 use crate::bindings::{export, host, Guest, TriggerAction, WasmResponse};
 use serde::{Deserialize, Serialize};
-use trigger::{decode_trigger_event, encode_trigger_output, Destination};
+use trigger::{decode_trigger_event, encode_trigger_output};
 
 struct Component;
 export!(Component with_types_in bindings);
@@ -58,7 +58,7 @@ struct CmcStatus {
 
 impl Guest for Component {
     fn run(action: TriggerAction) -> Result<Vec<WasmResponse>, String> {
-        let (trigger_id, data_bytes, dest) =
+        let (trigger_id, data_bytes, _dest) =
             decode_trigger_event(action.data).map_err(|e| e.to_string())?;
 
         // Parse symbol from args — supports JSON {"symbol":"BTC"} or plain "BTC"
@@ -88,13 +88,9 @@ impl Guest for Component {
 
         host::log(LogLevel::Info, "crypto-price: wrote result to KV tool/result");
 
-        let output = match dest {
-            Destination::Ethereum => vec![encode_trigger_output(trigger_id, &res)],
-            Destination::CliOutput => {
-                vec![WasmResponse { payload: res, ordering: None, event_id_salt: None }]
-            }
-        };
-        Ok(output)
+        // Always ABI-encode as DataWithId so on-chain submissions via SimpleSubmit succeed.
+        // This includes tool-protocol calls (TriggerData::Raw) which get trigger_id=0.
+        Ok(vec![encode_trigger_output(trigger_id, &res)])
     }
 }
 
